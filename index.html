@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0a0b0d" />
+    <title>Timbre — shape how your headphones sound</title>
+    <meta
+      name="description"
+      content="A browser-based workbench for designing headphone and earphone EQ curves. Drag a curve, hear it instantly."
+    />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0b0d'/%3E%3Cg fill='%23e8b44a'%3E%3Crect x='7' y='12' width='3' height='8' rx='1.5'/%3E%3Crect x='14' y='7' width='3' height='18' rx='1.5'/%3E%3Crect x='21' y='10' width='3' height='12' rx='1.5'/%3E%3C/g%3E%3C/svg%3E"
+    />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <a class="brand" href="./">
+          <span class="mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <path d="M4 10v4M9 6v12M14 8v8M19 11v2" />
+            </svg>
+          </span>
+          <span class="name">timbre</span>
+          <span class="tag">headphone EQ workbench</span>
+        </a>
+
+        <div class="topbar-meta">
+          <div class="meter" title="Output peak" aria-hidden="true">
+            <div class="meter-fill" id="meter-fill"></div>
+          </div>
+          <span class="rate" id="sample-rate">—</span>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="stage">
+          <div class="transport">
+            <button id="btn-play" class="btn primary" type="button">Play</button>
+            <button id="btn-file" class="btn" type="button">Open file</button>
+            <button id="btn-pink" class="btn" type="button">Pink noise</button>
+            <button id="btn-sweep" class="btn" type="button">Sweep</button>
+            <span class="spacer"></span>
+            <button id="btn-bypass" class="btn ghost" type="button" aria-pressed="false">Bypass</button>
+            <button id="btn-reset" class="btn ghost" type="button">Flatten</button>
+            <input id="file-input" type="file" accept="audio/*" hidden />
+          </div>
+
+          <div class="graph-wrap">
+            <canvas id="eq" aria-label="Equalizer response curve"></canvas>
+            <div class="graph-hint" id="graph-hint">Drag a dot to shape the curve</div>
+          </div>
+
+          <div class="status" id="status" role="status">Load a file or try pink noise.</div>
+        </section>
+
+        <aside class="panel">
+          <div class="panel-head">
+            <h2>Bands</h2>
+            <div class="preamp">
+              Preamp
+              <strong id="preamp">0.0 dB</strong>
+            </div>
+          </div>
+
+          <div id="bands" class="bands"></div>
+
+          <p class="note">
+            Preamp is automatic: it offsets your largest boost so the signal has headroom and
+            nothing clips.
+          </p>
+        </aside>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
