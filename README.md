@@ -10,7 +10,9 @@ your machine.
 
 ## Status
 
-**M0 — Skeleton.** Playback, auto-preamp, a 5-band parametric EQ, and a live response graph.
+**M1 — Engine.** Ten bands, every filter type, a biquad cascade in an `AudioWorklet`,
+per-channel routing, undo/redo, and level-matched A/B. The rendered output matches the
+analytic curve within 0.03 dB.
 
 ## Run it
 
@@ -30,10 +32,13 @@ npm run typecheck  # types only
 
 - Local file playback (drag and drop, or **Open file**)
 - Synthesised pink noise and a 20 Hz – 20 kHz sweep for auditioning
-- 5 parametric bands: peak, low shelf, high shelf
-- Drag a node on the graph to set frequency and gain
+- 10 parametric bands: peak, low shelf, high shelf, low pass, high pass, notch
+- Per-band channel routing: stereo, left, or right
+- Drag a node on the graph to set frequency and gain; drag vertically on pass filters to set Q
+- Shelf Q is converted to the RBJ slope `S`, so shelves behave like the exported profile
 - Automatic preamp: offsets the largest boost so nothing clips
-- Click-free bypass, level-matched against the preamp
+- Click-free bypass with RMS gain matching, so A/B compares tone rather than loudness
+- Undo/redo with `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z`, or `Ctrl/Cmd+Y` (50 steps)
 - Live output peak meter
 
 ## Architecture
@@ -45,7 +50,9 @@ src/
   style.css
   audio/
     dsp.ts             RBJ biquads, magnitude response, auto-preamp
-    engine.ts          Web Audio graph, file + test-signal sources
+    engine.ts          Web Audio graph, sources, gain matching
+    worklet/
+      biquad-processor.ts   AudioWorklet cascade (transposed DF-II)
   model/
     band.ts            Band model, defaults, formatting helpers
   ui/
@@ -56,17 +63,21 @@ src/
 Signal flow:
 
 ```
-input ──► preamp ──► band 0 ──► … ──► band 4 ──► eqGain ──┐
-  └──────────────────────────────────────────► dryGain ──┴──► out ──► analyser ──► destination
+input ──► preamp ──► worklet cascade (10 biquads, L/R) ──► eqGain ──┐
+  └──────────────────────────────────────────► dryTrim ──► dryGain ──┴──► out ──► analyser ──► destination
 ```
 
 Bypass crossfades `eqGain` against `dryGain` rather than tearing the chain down, so A/B
-switching is click-free.
+switching is click-free. `dryTrim` follows the RMS ratio of the two paths, which keeps the
+comparison honest while audio plays.
+
+Coefficients are computed once on the main thread and posted to the worklet, so the graph,
+the preview, and the future export all share one implementation. Each config change
+crossfades the old cascade into the new one, which avoids clicks and the instability of
+interpolating coefficients directly.
 
 ## Known gaps (by design, for now)
 
-- Audio still runs through `BiquadFilterNode`. The cascade moves into an `AudioWorklet` in M1
-  so that shelf coefficients match what gets exported (PRD TR-3 / risk R2).
 - No persistence, import, export, measurement overlay, or solver yet — those are M2/M3.
 - Desktop-first. Mobile works but the layout is tighter.
 
@@ -75,7 +86,7 @@ switching is click-free.
 | Milestone | Scope |
 |---|---|
 | M0 | Playback, preamp, 5 bands, graph ✅ |
-| M1 | AudioWorklet cascade, per-channel, undo, gain-matched A/B |
+| M1 | AudioWorklet cascade, 10 bands, all filter types, per-channel, undo, gain-matched A/B ✅ |
 | M2 | Profiles, `ParametricEQ.txt` import/export, Equalizer APO export |
 | M3 | Measurement CSV overlay, target curves, auto-fit solver |
 | M4 | Limiter, PWA, accessibility pass |

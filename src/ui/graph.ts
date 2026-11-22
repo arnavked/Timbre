@@ -5,8 +5,11 @@ import {
   FREQ_MIN,
   GAIN_MAX,
   GAIN_MIN,
+  Q_MAX,
+  Q_MIN,
   clamp,
   formatHz,
+  isPassType,
   type Band,
 } from '../model/band';
 
@@ -17,9 +20,13 @@ const POINTS = 360;
 const GRID_FREQS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
 const GRID_DB = [-24, -18, -12, -6, 0, 6, 12, 18, 24];
 
+export type BandPatch = Partial<Pick<Band, 'freq' | 'gain' | 'q'>>;
+
 export interface GraphCallbacks {
-  onChange(id: number, freq: number, gain: number): void;
+  onChange(id: number, patch: BandPatch): void;
   onSelect(id: number | null): void;
+  onDragStart(): void;
+  onDragEnd(): void;
   onInteract(): void;
 }
 
@@ -104,8 +111,14 @@ export class EQGraph {
     return DB_MIN + t * (DB_MAX - DB_MIN);
   }
 
+  private yToQ(y: number): number {
+    const t = clamp((y - this.pad.top) / this.plotHeight, 0, 1);
+    return Q_MIN * Math.pow(Q_MAX / Q_MIN, 1 - t);
+  }
+
   private handlePoint(band: Band): Point {
-    return { x: this.freqToX(band.freq), y: this.dbToY(band.gain) };
+    const y = isPassType(band.type) ? this.dbToY(0) : this.dbToY(band.gain);
+    return { x: this.freqToX(band.freq), y };
   }
 
   // ----------------------------------------------------------------- drawing
@@ -179,15 +192,20 @@ export class EQGraph {
     return String(freq);
   }
 
-  private drawBandCurves(g: CanvasRenderingContext2D): void {
-    const freqs: number[] = [];
+  private sampleFrequencies(): number[] {
+    const freqs = new Array<number>(POINTS);
     for (let i = 0; i < POINTS; i++) {
       const t = i / (POINTS - 1);
-      freqs.push(FREQ_MIN * Math.pow(FREQ_MAX / FREQ_MIN, t));
+      freqs[i] = FREQ_MIN * Math.pow(FREQ_MAX / FREQ_MIN, t);
     }
+    return freqs;
+  }
+
+  private drawBandCurves(g: CanvasRenderingContext2D): void {
+    const freqs = this.sampleFrequencies();
 
     for (const band of this.bands) {
-      if (!band.enabled || band.gain === 0) continue;
+      if (!band.enabled) continue;
       const color = BAND_COLORS[band.id % BAND_COLORS.length];
       const coeffs = biquad(band.type, band.freq, band.gain, band.q, this.sampleRate);
 
@@ -208,15 +226,10 @@ export class EQGraph {
   }
 
   private drawCombined(g: CanvasRenderingContext2D): void {
-    const freqs: number[] = [];
-    for (let i = 0; i < POINTS; i++) {
-      const t = i / (POINTS - 1);
-      freqs.push(FREQ_MIN * Math.pow(FREQ_MAX / FREQ_MIN, t));
-    }
-
+    const freqs = this.sampleFrequencies();
     const coeffs = this.bands
-      .filter((b) => b.enabled)
-      .map((b) => biquad(b.type, b.freq, b.gain, b.q, this.sampleRate));
+      .filter((band) => band.enabled)
+      .map((band) => biquad(band.type, band.freq, band.gain, band.q, this.sampleRate));
 
     const points: Point[] = [];
     for (const freq of freqs) {
@@ -229,7 +242,7 @@ export class EQGraph {
     g.save();
     g.beginPath();
     g.moveTo(points[0].x, this.dbToY(0));
-    for (const p of points) g.lineTo(p.x, p.y);
+    for (const point of points) g.lineTo(point.x, point.y);
     g.lineTo(points[points.length - 1].x, this.dbToY(0));
     g.closePath();
     g.fillStyle = 'rgba(232, 180, 74, 0.07)';
@@ -237,7 +250,7 @@ export class EQGraph {
     g.restore();
 
     g.beginPath();
-    points.forEach((p, i) => (i === 0 ? g.moveTo(p.x, p.y) : g.lineTo(p.x, p.y)));
+    points.forEach((point, i) => (i === 0 ? g.moveTo(point.x, point.y) : g.lineTo(point.x, point.y)));
     g.strokeStyle = '#e8b44a';
     g.lineWidth = 2.25;
     g.lineJoin = 'round';
@@ -281,11 +294,14 @@ export class EQGraph {
 
   private drawDragLabel(g: CanvasRenderingContext2D): void {
     if (this.dragId === null) return;
-    const band = this.bands.find((b) => b.id === this.dragId);
+    const band = this.bands.find((candidate) => candidate.id === this.dragId);
     if (!band) return;
 
     const { x, y } = this.handlePoint(band);
-    const text = `${formatHz(band.freq)}   ${band.gain >= 0 ? '+' : ''}${band.gain.toFixed(1)} dB`;
+    const detail = isPassType(band.type)
+      ? `Q ${band.q.toFixed(2)}`
+      : `${band.gain >= 0 ? '+' : ''}${band.gain.toFixed(1)} dB`;
+    const text = `${formatHz(band.freq)}   ${detail}`;
 
     g.save();
     g.font = '11px ui-monospace, "SF Mono", Consolas, monospace';
@@ -322,9 +338,7 @@ export class EQGraph {
 
     for (const band of this.bands) {
       const handle = this.handlePoint(band);
-      const dx = handle.x - point.x;
-      const dy = handle.y - point.y;
-      const distance = Math.hypot(dx, dy);
+      const distance = Math.hypot(handle.x - point.x, handle.y - point.y);
       if (distance < bestDistance) {
         bestDistance = distance;
         best = band;
@@ -349,8 +363,10 @@ export class EQGraph {
     } catch {
       // Synthetic or already-released pointer; dragging still works without capture.
     }
+
     this.dragId = band.id;
     this.cb.onSelect(band.id);
+    this.cb.onDragStart();
     this.cb.onInteract();
     this.draw();
   };
@@ -370,9 +386,17 @@ export class EQGraph {
     }
 
     this.canvas.style.cursor = 'grabbing';
+    const band = this.bands.find((candidate) => candidate.id === this.dragId);
+    if (!band) return;
+
     const freq = clamp(this.xToFreq(point.x), FREQ_MIN, FREQ_MAX);
-    const gain = clamp(this.yToDb(point.y), GAIN_MIN, GAIN_MAX);
-    this.cb.onChange(this.dragId, freq, gain);
+
+    if (isPassType(band.type)) {
+      this.cb.onChange(band.id, { freq, q: clamp(this.yToQ(point.y), Q_MIN, Q_MAX) });
+    } else {
+      const gain = clamp(this.yToDb(point.y), GAIN_MIN, GAIN_MAX);
+      this.cb.onChange(band.id, { freq, gain });
+    }
   };
 
   private readonly onPointerUp = (event: PointerEvent): void => {
@@ -382,6 +406,7 @@ export class EQGraph {
     }
     this.dragId = null;
     this.canvas.style.cursor = 'crosshair';
+    this.cb.onDragEnd();
     this.draw();
   };
 

@@ -9,13 +9,28 @@ export interface Biquad {
   a2: number;
 }
 
+function normalized(
+  b0: number,
+  b1: number,
+  b2: number,
+  a0: number,
+  a1: number,
+  a2: number,
+): Biquad {
+  const g = 1 / a0;
+  return { b0: b0 * g, b1: b1 * g, b2: b2 * g, a0: 1, a1: a1 * g, a2: a2 * g };
+}
+
 /**
- * RBJ Audio EQ Cookbook coefficients.
+ * RBJ Audio EQ Cookbook coefficients, normalised so a0 = 1.
  *
- * Shelves are computed with S = 1, which is exactly what the Web Audio
- * BiquadFilterNode does, so the drawn curve matches what you hear.
- * (AutoEQ exports Q-based shelves; that difference is fixed in M1 when the
- * cascade moves into an AudioWorklet — see PRD TR-3 / risk R2.)
+ * Shelves derive their slope S from Q:
+ *
+ *   S = 1 / (1 + (1/Q² - 2) / (A + 1/A))
+ *
+ * Q = 0.7071 gives S = 1, which is the Web Audio default and close to the
+ * Q = 0.7 that AutoEQ writes into its LSC/HSC filters. Because the preview and
+ * the export use the same generator, what you hear is what you export.
  */
 export function biquad(
   type: FilterType,
@@ -28,43 +43,73 @@ export function biquad(
   const w0 = (2 * Math.PI * f) / sampleRate;
   const cos = Math.cos(w0);
   const sin = Math.sin(w0);
-  const A = Math.pow(10, gainDb / 40);
+  const alphaQ = sin / (2 * Math.max(q, 0.0001));
 
-  if (type === 'peaking') {
-    const alpha = sin / (2 * Math.max(q, 0.0001));
-    return {
-      b0: 1 + alpha * A,
-      b1: -2 * cos,
-      b2: 1 - alpha * A,
-      a0: 1 + alpha / A,
-      a1: -2 * cos,
-      a2: 1 - alpha / A,
-    };
+  switch (type) {
+    case 'lowpass':
+      return normalized((1 - cos) / 2, 1 - cos, (1 - cos) / 2, 1 + alphaQ, -2 * cos, 1 - alphaQ);
+
+    case 'highpass':
+      return normalized(
+        (1 + cos) / 2,
+        -(1 + cos),
+        (1 + cos) / 2,
+        1 + alphaQ,
+        -2 * cos,
+        1 - alphaQ,
+      );
+
+    case 'notch':
+      return normalized(1, -2 * cos, 1, 1 + alphaQ, -2 * cos, 1 - alphaQ);
+
+    case 'peaking': {
+      const A = Math.pow(10, gainDb / 40);
+      const alpha = sin / (2 * Math.max(q, 0.0001));
+      return normalized(
+        1 + alpha * A,
+        -2 * cos,
+        1 - alpha * A,
+        1 + alpha / A,
+        -2 * cos,
+        1 - alpha / A,
+      );
+    }
+
+    case 'lowshelf': {
+      const A = Math.pow(10, gainDb / 40);
+      const alpha = shelfAlpha(A, q, sin);
+      const k = 2 * Math.sqrt(A) * alpha;
+      return normalized(
+        A * (A + 1 - (A - 1) * cos + k),
+        2 * A * (A - 1 - (A + 1) * cos),
+        A * (A + 1 - (A - 1) * cos - k),
+        A + 1 + (A - 1) * cos + k,
+        -2 * (A - 1 + (A + 1) * cos),
+        A + 1 + (A - 1) * cos - k,
+      );
+    }
+
+    case 'highshelf': {
+      const A = Math.pow(10, gainDb / 40);
+      const alpha = shelfAlpha(A, q, sin);
+      const k = 2 * Math.sqrt(A) * alpha;
+      return normalized(
+        A * (A + 1 + (A - 1) * cos + k),
+        -2 * A * (A - 1 + (A + 1) * cos),
+        A * (A + 1 + (A - 1) * cos - k),
+        A + 1 - (A - 1) * cos + k,
+        2 * (A - 1 - (A + 1) * cos),
+        A + 1 - (A - 1) * cos - k,
+      );
+    }
   }
+}
 
-  // S = 1 shelf: alpha = sin(w0)/2 * sqrt(2)
-  const alpha = (sin / 2) * Math.SQRT2;
-  const twoSqrtAAlpha = 2 * Math.sqrt(A) * alpha;
-
-  if (type === 'lowshelf') {
-    return {
-      b0: A * (A + 1 - (A - 1) * cos + twoSqrtAAlpha),
-      b1: 2 * A * (A - 1 - (A + 1) * cos),
-      b2: A * (A + 1 - (A - 1) * cos - twoSqrtAAlpha),
-      a0: A + 1 + (A - 1) * cos + twoSqrtAAlpha,
-      a1: -2 * (A - 1 + (A + 1) * cos),
-      a2: A + 1 + (A - 1) * cos - twoSqrtAAlpha,
-    };
-  }
-
-  return {
-    b0: A * (A + 1 + (A - 1) * cos + twoSqrtAAlpha),
-    b1: -2 * A * (A - 1 + (A + 1) * cos),
-    b2: A * (A + 1 + (A - 1) * cos - twoSqrtAAlpha),
-    a0: A + 1 - (A - 1) * cos + twoSqrtAAlpha,
-    a1: 2 * (A - 1 - (A + 1) * cos),
-    a2: A + 1 - (A - 1) * cos - twoSqrtAAlpha,
-  };
+function shelfAlpha(A: number, q: number, sin: number): number {
+  const sum = A + 1 / A;
+  const invS = 1 + (1 / (q * q) - 2) / sum;
+  const inside = sum * (Math.max(invS, 0.05) - 1) + 2;
+  return (sin / 2) * Math.sqrt(Math.max(inside, 1e-6));
 }
 
 /** Magnitude response of one biquad at a frequency, in dB. */
@@ -96,7 +141,9 @@ export function combinedResponseDb(
   const out = new Array<number>(freqs.length).fill(0);
 
   for (const band of bands) {
-    if (!band.enabled || band.gain === 0) continue;
+    if (!band.enabled) continue;
+    // A peaking/shelf filter at 0 dB is exactly flat; pass filters are not.
+    if (bandUsesGain(band) && band.gain === 0) continue;
     const c = biquad(band.type, band.freq, band.gain, band.q, sampleRate);
     for (let i = 0; i < freqs.length; i++) {
       out[i] += magnitudeDb(c, freqs[i], sampleRate);
@@ -104,6 +151,10 @@ export function combinedResponseDb(
   }
 
   return out;
+}
+
+function bandUsesGain(band: Band): boolean {
+  return band.type === 'peaking' || band.type === 'lowshelf' || band.type === 'highshelf';
 }
 
 export function logSpace(min: number, max: number, count: number): number[] {
@@ -121,7 +172,7 @@ export function logSpace(min: number, max: number, count: number): number[] {
  * Keeps the signal below 0 dBFS without the user having to think about it.
  */
 export function autoPreampDb(bands: Band[], sampleRate: number): number {
-  const freqs = logSpace(20, 20000, 256);
+  const freqs = logSpace(20, 20000, 512);
   const response = combinedResponseDb(bands, freqs, sampleRate);
   let max = 0;
   for (const db of response) if (db > max) max = db;

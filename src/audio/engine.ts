@@ -1,16 +1,33 @@
+import workletUrl from './worklet/biquad-processor.ts?worker&url';
+
 import type { Band } from '../model/band';
+import { biquad } from './dsp';
 
 export type TestSignal = 'pink' | 'sweep';
+
+const RAMP_MS = 25;
+const TRIM_MIN = 0.178; // -15 dB
+const TRIM_MAX = 5.623; // +15 dB
+
+function rms(analyser: AnalyserNode, buffer: Float32Array<ArrayBuffer>): number {
+  analyser.getFloatTimeDomainData(buffer);
+  let sum = 0;
+  for (let i = 0; i < buffer.length; i++) {
+    sum += buffer[i] * buffer[i];
+  }
+  return Math.sqrt(sum / buffer.length);
+}
 
 /**
  * Signal flow:
  *
- *   input ──► preamp ──► band 0 ──► … ──► band N ──► eqGain ──┐
- *     └────────────────────────────────────────► dryGain ────┴──► out ──► analyser ──► destination
+ *   input ──► preamp ──► worklet cascade ──► wetAnalyser ──► eqGain ──┐
+ *     └──► dryAnalyser ──► dryTrim ──► dryGain ───────────────────────┴──► out ──► master ──► destination
  *
  * Bypass crossfades eqGain against dryGain instead of tearing the chain down,
- * so A/B switching is click-free. The dry path is trimmed by the preamp so the
- * comparison is roughly level-matched.
+ * so A/B switching is click-free. dryTrim is driven by the ratio of the two
+ * analyser RMS readings, which makes the comparison level-matched while audio
+ * is playing rather than merely preamp-matched.
  */
 export class AudioEngine {
   readonly ctx: AudioContext;
@@ -19,59 +36,108 @@ export class AudioEngine {
   private readonly preampNode: GainNode;
   private readonly eqGain: GainNode;
   private readonly dryGain: GainNode;
+  private readonly dryTrim: GainNode;
   private readonly outGain: GainNode;
-  private readonly analyser: AnalyserNode;
-  private readonly filters: BiquadFilterNode[] = [];
-  private readonly audioEl: HTMLAudioElement;
+  private readonly masterAnalyser: AnalyserNode;
+  private readonly wetAnalyser: AnalyserNode;
+  private readonly dryAnalyser: AnalyserNode;
+
   private readonly peakBuffer: Float32Array<ArrayBuffer>;
+  private readonly wetBuffer: Float32Array<ArrayBuffer>;
+  private readonly dryBuffer: Float32Array<ArrayBuffer>;
+
+  private readonly audioEl: HTMLAudioElement;
 
   private mediaSource: MediaElementAudioSourceNode | null = null;
   private bufferSource: AudioBufferSourceNode | null = null;
   private objectUrl: string | null = null;
-  private preampDb = 0;
-  private bypassed = false;
 
-  constructor(bandCount: number) {
+  private worklet: AudioWorkletNode | null = null;
+  private workletState = 'none';
+  private bands: Band[] = [];
+  private bandsSent = 0;
+  private bypassed = false;
+  private trimValue = 1;
+  private bufferLabel: string | null = null;
+  private fileLabel: string | null = null;
+  private initialized = false;
+
+  constructor() {
     this.ctx = new AudioContext({ latencyHint: 'interactive' });
 
     this.input = this.ctx.createGain();
     this.preampNode = this.ctx.createGain();
     this.eqGain = this.ctx.createGain();
     this.dryGain = this.ctx.createGain();
+    this.dryTrim = this.ctx.createGain();
     this.outGain = this.ctx.createGain();
-    this.analyser = this.ctx.createAnalyser();
-    this.analyser.fftSize = 1024;
-    this.peakBuffer = new Float32Array(this.analyser.fftSize);
 
-    // Build the filter cascade.
-    let tail: AudioNode = this.preampNode;
-    for (let i = 0; i < bandCount; i++) {
-      const filter = this.ctx.createBiquadFilter();
-      filter.type = 'peaking';
-      filter.frequency.value = 1000;
-      filter.gain.value = 0;
-      filter.Q.value = 1;
-      tail.connect(filter);
-      tail = filter;
-      this.filters.push(filter);
-    }
-    tail.connect(this.eqGain);
-    this.eqGain.connect(this.outGain);
+    this.masterAnalyser = this.ctx.createAnalyser();
+    this.wetAnalyser = this.ctx.createAnalyser();
+    this.dryAnalyser = this.ctx.createAnalyser();
+    this.masterAnalyser.fftSize = 1024;
+    this.wetAnalyser.fftSize = 1024;
+    this.dryAnalyser.fftSize = 1024;
+
+    this.peakBuffer = new Float32Array(this.masterAnalyser.fftSize);
+    this.wetBuffer = new Float32Array(this.wetAnalyser.fftSize);
+    this.dryBuffer = new Float32Array(this.dryAnalyser.fftSize);
 
     this.input.connect(this.preampNode);
-    this.input.connect(this.dryGain);
+
+    this.input.connect(this.dryAnalyser);
+    this.dryAnalyser.connect(this.dryTrim);
+    this.dryTrim.connect(this.dryGain);
     this.dryGain.connect(this.outGain);
 
-    this.outGain.connect(this.analyser);
-    this.analyser.connect(this.ctx.destination);
+    this.eqGain.connect(this.outGain);
+    this.outGain.connect(this.masterAnalyser);
+    this.masterAnalyser.connect(this.ctx.destination);
 
-    // Start fully wet.
     this.eqGain.gain.value = 1;
     this.dryGain.gain.value = 0;
+    this.dryTrim.gain.value = 1;
 
     this.audioEl = new Audio();
     this.audioEl.loop = true;
     this.audioEl.preload = 'metadata';
+  }
+
+  async init(): Promise<void> {
+    if (this.initialized) return;
+
+    await this.ctx.audioWorklet.addModule(workletUrl);
+
+    const node = new AudioWorkletNode(this.ctx, 'timbre-biquad', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+      channelCount: 2,
+      channelCountMode: 'explicit',
+    });
+
+    this.preampNode.connect(node);
+    node.connect(this.wetAnalyser);
+    this.wetAnalyser.connect(this.eqGain);
+
+    node.port.onmessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; bands?: number; sampleRate?: number };
+      if (data?.type === 'hello') this.workletState = `hello@${data.sampleRate}`;
+      else if (data?.type === 'ack') this.workletState = `ack:${data.bands}`;
+    };
+
+    this.worklet = node;
+    this.initialized = true;
+    this.sendConfig();
+  }
+
+  get ready(): boolean {
+    return this.initialized;
+  }
+
+  /** Handshake state of the worklet, for diagnostics. */
+  get diagnostics(): { worklet: string; bandsSent: number } {
+    return { worklet: this.workletState, bandsSent: this.bandsSent };
   }
 
   get sampleRate(): number {
@@ -91,9 +157,6 @@ export class AudioEngine {
     if (!this.audioEl.src) return null;
     return this.fileLabel;
   }
-
-  private bufferLabel: string | null = null;
-  private fileLabel: string | null = null;
 
   async resume(): Promise<void> {
     if (this.ctx.state !== 'running') {
@@ -145,45 +208,69 @@ export class AudioEngine {
   }
 
   setBands(bands: Band[]): void {
-    const now = this.ctx.currentTime;
-    for (let i = 0; i < this.filters.length; i++) {
-      const filter = this.filters[i];
-      const band = bands[i];
-      if (!filter || !band) continue;
-
-      filter.type = band.type;
-      filter.frequency.setTargetAtTime(band.freq, now, 0.01);
-      filter.gain.setTargetAtTime(band.enabled ? band.gain : 0, now, 0.01);
-      filter.Q.setTargetAtTime(band.q, now, 0.01);
-    }
+    this.bands = bands;
+    this.sendConfig();
   }
 
   setPreamp(db: number): void {
-    this.preampDb = db;
-    const now = this.ctx.currentTime;
-    this.preampNode.gain.setTargetAtTime(Math.pow(10, db / 20), now, 0.01);
-    if (this.bypassed) {
-      this.dryGain.gain.setTargetAtTime(Math.pow(10, db / 20), now, 0.01);
-    }
+    this.preampNode.gain.setTargetAtTime(Math.pow(10, db / 20), this.ctx.currentTime, 0.01);
   }
 
   setBypass(on: boolean): void {
     this.bypassed = on;
     const now = this.ctx.currentTime;
-    const dry = Math.pow(10, this.preampDb / 20);
     this.eqGain.gain.setTargetAtTime(on ? 0 : 1, now, 0.02);
-    this.dryGain.gain.setTargetAtTime(on ? dry : 0, now, 0.02);
+    this.dryGain.gain.setTargetAtTime(on ? 1 : 0, now, 0.02);
+  }
+
+  /**
+   * Match the dry path to the wet path using the ratio of their RMS levels.
+   * Called from the UI tick; cheap and idempotent when silent.
+   */
+  updateGainMatch(): void {
+    if (!this.playing) return;
+
+    const wet = rms(this.wetAnalyser, this.wetBuffer);
+    const dry = rms(this.dryAnalyser, this.dryBuffer);
+    if (wet < 1e-5 || dry < 1e-5) return;
+
+    const target = wet / dry;
+    const next = this.trimValue + (target - this.trimValue) * 0.2;
+    this.trimValue = Math.min(Math.max(next, TRIM_MIN), TRIM_MAX);
+    this.dryTrim.gain.setTargetAtTime(this.trimValue, this.ctx.currentTime, 0.05);
   }
 
   /** Peak sample magnitude of the most recent analyser window, 0..1+. */
   readPeak(): number {
-    this.analyser.getFloatTimeDomainData(this.peakBuffer);
+    this.masterAnalyser.getFloatTimeDomainData(this.peakBuffer);
     let peak = 0;
     for (let i = 0; i < this.peakBuffer.length; i++) {
-      const v = Math.abs(this.peakBuffer[i]);
-      if (v > peak) peak = v;
+      const value = Math.abs(this.peakBuffer[i]);
+      if (value > peak) peak = value;
     }
     return peak;
+  }
+
+  private sendConfig(): void {
+    const node = this.worklet;
+    if (!node) return;
+
+    const bands = [];
+    for (const band of this.bands) {
+      if (!band.enabled) continue;
+      const c = biquad(band.type, band.freq, band.gain, band.q, this.sampleRate);
+      bands.push({
+        b0: c.b0,
+        b1: c.b1,
+        b2: c.b2,
+        a1: c.a1,
+        a2: c.a2,
+        channel: band.channel === 'stereo' ? 0 : band.channel === 'L' ? 1 : 2,
+      });
+    }
+
+    node.port.postMessage({ type: 'config', bands, rampMs: RAMP_MS });
+    this.bandsSent = bands.length;
   }
 
   private ensureMediaSource(): void {

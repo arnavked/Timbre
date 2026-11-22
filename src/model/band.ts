@@ -1,4 +1,12 @@
-export type FilterType = 'peaking' | 'lowshelf' | 'highshelf';
+export type FilterType =
+  | 'peaking'
+  | 'lowshelf'
+  | 'highshelf'
+  | 'lowpass'
+  | 'highpass'
+  | 'notch';
+
+export type Channel = 'stereo' | 'L' | 'R';
 
 export interface Band {
   id: number;
@@ -6,15 +14,33 @@ export interface Band {
   type: FilterType;
   /** Centre / corner frequency in Hz. */
   freq: number;
-  /** Gain in dB. Ignored by pass filters. */
+  /** Gain in dB. Ignored by pass filters and notch. */
   gain: number;
-  /** Q factor. Ignored by shelves (Web Audio fixes their slope at S = 1). */
+  /**
+   * Q factor.
+   *
+   * For shelves this is converted to an RBJ slope S, which is what AutoEQ and
+   * Equalizer APO mean by the Q on an LSC/HSC filter. Q = 0.7071 gives S = 1
+   * (the Web Audio default).
+   */
   q: number;
+  channel: Channel;
 }
 
-export const BAND_COUNT = 5;
+export const BAND_COUNT = 10;
 
-export const BAND_COLORS = ['#e8b44a', '#56b6f0', '#8f7bf0', '#4fd1a5', '#ef7fa8'];
+export const BAND_COLORS = [
+  '#e8b44a',
+  '#56b6f0',
+  '#8f7bf0',
+  '#4fd1a5',
+  '#ef7fa8',
+  '#f2a65a',
+  '#63d2d8',
+  '#b8c96a',
+  '#c98bf0',
+  '#7aa2f7',
+];
 
 export const FREQ_MIN = 20;
 export const FREQ_MAX = 20000;
@@ -23,22 +49,55 @@ export const GAIN_MAX = 20;
 export const Q_MIN = 0.1;
 export const Q_MAX = 18;
 
+export interface FilterTypeInfo {
+  value: FilterType;
+  label: string;
+  short: string;
+  usesGain: boolean;
+}
+
+export const FILTER_TYPES: FilterTypeInfo[] = [
+  { value: 'peaking', label: 'Peak', short: 'PK', usesGain: true },
+  { value: 'lowshelf', label: 'Low shelf', short: 'LS', usesGain: true },
+  { value: 'highshelf', label: 'High shelf', short: 'HS', usesGain: true },
+  { value: 'lowpass', label: 'Low pass', short: 'LP', usesGain: false },
+  { value: 'highpass', label: 'High pass', short: 'HP', usesGain: false },
+  { value: 'notch', label: 'Notch', short: 'NO', usesGain: false },
+];
+
+export function isPassType(type: FilterType): boolean {
+  return type === 'lowpass' || type === 'highpass' || type === 'notch';
+}
+
+export function usesGain(type: FilterType): boolean {
+  return !isPassType(type);
+}
+
 /**
  * A mild starting curve so the first-run experience is audible rather than a flat line.
- * "Flatten" in the UI returns every band to 0 dB.
+ * Bands 5-9 start disabled so the graph is not cluttered with idle handles.
  */
 export function createDefaultBands(): Band[] {
   return [
-    { id: 0, enabled: true, type: 'lowshelf', freq: 105, gain: 3, q: 0.707 },
-    { id: 1, enabled: true, type: 'peaking', freq: 320, gain: -1.5, q: 1 },
-    { id: 2, enabled: true, type: 'peaking', freq: 1200, gain: 0, q: 1 },
-    { id: 3, enabled: true, type: 'peaking', freq: 3000, gain: 1.5, q: 1.2 },
-    { id: 4, enabled: true, type: 'highshelf', freq: 10000, gain: -2, q: 0.707 },
+    { id: 0, enabled: true, type: 'lowshelf', freq: 105, gain: 3, q: 0.707, channel: 'stereo' },
+    { id: 1, enabled: true, type: 'peaking', freq: 320, gain: -1.5, q: 1.2, channel: 'stereo' },
+    { id: 2, enabled: true, type: 'peaking', freq: 1200, gain: 0, q: 1, channel: 'stereo' },
+    { id: 3, enabled: true, type: 'peaking', freq: 3000, gain: 1.5, q: 1.2, channel: 'stereo' },
+    { id: 4, enabled: true, type: 'highshelf', freq: 10000, gain: -2, q: 0.707, channel: 'stereo' },
+    { id: 5, enabled: false, type: 'peaking', freq: 60, gain: 0, q: 1, channel: 'stereo' },
+    { id: 6, enabled: false, type: 'peaking', freq: 600, gain: 0, q: 1, channel: 'stereo' },
+    { id: 7, enabled: false, type: 'peaking', freq: 2000, gain: 0, q: 1, channel: 'stereo' },
+    { id: 8, enabled: false, type: 'peaking', freq: 6000, gain: 0, q: 1, channel: 'stereo' },
+    { id: 9, enabled: false, type: 'peaking', freq: 15000, gain: 0, q: 1, channel: 'stereo' },
   ];
 }
 
+export function cloneBands(bands: Band[]): Band[] {
+  return bands.map((band) => ({ ...band }));
+}
+
 export function flattenBands(bands: Band[]): Band[] {
-  return bands.map((b) => ({ ...b, gain: 0 }));
+  return bands.map((band) => ({ ...band, gain: 0 }));
 }
 
 export function clamp(value: number, min: number, max: number): number {

@@ -1,5 +1,6 @@
 import {
   BAND_COLORS,
+  FILTER_TYPES,
   FREQ_MAX,
   FREQ_MIN,
   GAIN_MAX,
@@ -8,7 +9,9 @@ import {
   Q_MIN,
   clamp,
   parseNumber,
+  usesGain,
   type Band,
+  type Channel,
   type FilterType,
 } from '../model/band';
 
@@ -21,17 +24,12 @@ interface Row {
   root: HTMLElement;
   swatch: HTMLButtonElement;
   type: HTMLSelectElement;
+  channel: HTMLSelectElement;
   power: HTMLButtonElement;
   freq: HTMLInputElement;
   gain: HTMLInputElement;
   q: HTMLInputElement;
 }
-
-const TYPE_LABEL: Record<FilterType, string> = {
-  peaking: 'Peak',
-  lowshelf: 'Low shelf',
-  highshelf: 'High shelf',
-};
 
 export class BandList {
   private readonly rows: Row[] = [];
@@ -65,11 +63,14 @@ export class BandList {
       row.root.classList.toggle('disabled', !band.enabled);
 
       row.type.value = band.type;
+      row.channel.value = band.channel;
       row.power.setAttribute('aria-pressed', String(band.enabled));
-      row.power.setAttribute('aria-label', `${band.enabled ? 'Disable' : 'Enable'} band ${band.id + 1}`);
+      row.power.setAttribute(
+        'aria-label',
+        `${band.enabled ? 'Disable' : 'Enable'} band ${band.id + 1}`,
+      );
 
-      const isPeak = band.type === 'peaking';
-      row.q.disabled = !isPeak;
+      row.gain.disabled = !usesGain(band.type);
 
       if (document.activeElement !== row.freq) {
         row.freq.value = String(Math.round(band.freq));
@@ -97,12 +98,17 @@ export class BandList {
     root.className = 'band';
     root.dataset.id = String(band.id);
 
+    const typeOptions = FILTER_TYPES.map(
+      (type) => `<option value="${type.value}">${type.label}</option>`,
+    ).join('');
+
     root.innerHTML = `
       <button class="swatch" type="button" aria-label="Select band"></button>
-      <select class="type" aria-label="Filter type">
-        <option value="peaking">${TYPE_LABEL.peaking}</option>
-        <option value="lowshelf">${TYPE_LABEL.lowshelf}</option>
-        <option value="highshelf">${TYPE_LABEL.highshelf}</option>
+      <select class="type" aria-label="Filter type">${typeOptions}</select>
+      <select class="channel" aria-label="Channel">
+        <option value="stereo">ST</option>
+        <option value="L">L</option>
+        <option value="R">R</option>
       </select>
       <button class="power" type="button" aria-pressed="true" aria-label="Enable band"></button>
       <div class="fields">
@@ -114,12 +120,13 @@ export class BandList {
 
     const swatch = root.querySelector<HTMLButtonElement>('.swatch');
     const type = root.querySelector<HTMLSelectElement>('.type');
+    const channel = root.querySelector<HTMLSelectElement>('.channel');
     const power = root.querySelector<HTMLButtonElement>('.power');
     const freq = root.querySelector<HTMLInputElement>('.freq');
     const gain = root.querySelector<HTMLInputElement>('.gain');
     const q = root.querySelector<HTMLInputElement>('.q');
 
-    if (!swatch || !type || !power || !freq || !gain || !q) {
+    if (!swatch || !type || !channel || !power || !freq || !gain || !q) {
       throw new Error('Failed to build band row');
     }
 
@@ -129,8 +136,11 @@ export class BandList {
     type.addEventListener('change', () => {
       this.cb.onChange(id, { type: type.value as FilterType });
     });
+    channel.addEventListener('change', () => {
+      this.cb.onChange(id, { channel: channel.value as Channel });
+    });
     power.addEventListener('click', () => {
-      const current = this.bands.find((b) => b.id === id);
+      const current = this.bands.find((candidate) => candidate.id === id);
       this.cb.onChange(id, { enabled: !(current?.enabled ?? true) });
     });
 
@@ -160,6 +170,6 @@ export class BandList {
     bindNumber(gain, (value) => ({ gain: clamp(value, GAIN_MIN, GAIN_MAX) }));
     bindNumber(q, (value) => ({ q: clamp(value, Q_MIN, Q_MAX) }));
 
-    return { root, swatch, type, power, freq, gain, q };
+    return { root, swatch, type, channel, power, freq, gain, q };
   }
 }
