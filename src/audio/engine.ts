@@ -57,6 +57,7 @@ export class AudioEngine {
   private bands: Band[] = [];
   private bandsSent = 0;
   private bypassed = false;
+  private wantRunning = false;
   private trimValue = 1;
   private bufferLabel: string | null = null;
   private fileLabel: string | null = null;
@@ -129,6 +130,11 @@ export class AudioEngine {
     this.worklet = node;
     this.initialized = true;
     this.sendConfig();
+
+    // Keep the output device closed until something actually plays. A running
+    // AudioContext holds the headset's audio stream open, which many USB and
+    // Bluetooth devices render as audible hiss even while the signal is silent.
+    this.suspendIfIdle();
   }
 
   get ready(): boolean {
@@ -159,6 +165,7 @@ export class AudioEngine {
   }
 
   async resume(): Promise<void> {
+    this.wantRunning = true;
     if (this.ctx.state !== 'running') {
       await this.ctx.resume();
     }
@@ -180,12 +187,21 @@ export class AudioEngine {
   async play(): Promise<void> {
     await this.resume();
     if (!this.audioEl.src) return;
-    await this.audioEl.play();
+    try {
+      await this.audioEl.play();
+    } catch (error) {
+      // Autoplay was blocked, so don't keep the output device open for nothing.
+      this.wantRunning = false;
+      this.suspendIfIdle();
+      throw error;
+    }
   }
 
   pause(): void {
+    this.wantRunning = false;
     this.audioEl.pause();
     this.stopBuffer();
+    this.suspendIfIdle();
   }
 
   async playTest(kind: TestSignal): Promise<void> {
@@ -199,7 +215,10 @@ export class AudioEngine {
     source.loop = kind === 'pink';
     source.connect(this.input);
     source.onended = () => {
-      if (this.bufferSource === source) this.bufferSource = null;
+      if (this.bufferSource !== source) return;
+      this.bufferSource = null;
+      this.wantRunning = false;
+      this.suspendIfIdle();
     };
     source.start();
 
@@ -290,6 +309,14 @@ export class AudioEngine {
       // already stopped
     }
     source.disconnect();
+  }
+
+  /** Release the audio device once nothing is playing. */
+  private suspendIfIdle(): void {
+    if (this.wantRunning) return;
+    if (this.ctx.state === 'running') {
+      void this.ctx.suspend();
+    }
   }
 
   private makePinkNoise(seconds: number): AudioBuffer {

@@ -39,6 +39,8 @@ npm run typecheck  # types only
 - Automatic preamp: offsets the largest boost so nothing clips
 - Click-free bypass with RMS gain matching, so A/B compares tone rather than loudness
 - Undo/redo with `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z`, or `Ctrl/Cmd+Y` (50 steps)
+- The audio device is released whenever nothing is playing, so USB and Bluetooth
+  headsets don't idle-hiss
 - Live output peak meter
 
 ## Architecture

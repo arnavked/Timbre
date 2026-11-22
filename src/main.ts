@@ -342,10 +342,14 @@ engine
 let lastMatch = 0;
 
 function tick(now: number): void {
-  const peak = engine.readPeak();
-  const db = peak > 0 ? 20 * Math.log10(peak) : -60;
-  const percent = clamp((db + 60) / 60, 0, 1) * 100;
-  meterEl.style.width = `${percent.toFixed(1)}%`;
+  if (engine.playing) {
+    const peak = engine.readPeak();
+    const db = peak > 0 ? 20 * Math.log10(peak) : -60;
+    const percent = clamp((db + 60) / 60, 0, 1) * 100;
+    meterEl.style.width = `${percent.toFixed(1)}%`;
+  } else {
+    meterEl.style.width = '0%';
+  }
 
   if (now - lastMatch > 120) {
     engine.updateGainMatch();
