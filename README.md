@@ -47,7 +47,8 @@ npm run typecheck  # types only
   (model + connection + codec + ANC)
 - Profiles live in IndexedDB and never leave the browser
 - Import AutoEQ / Equalizer APO / Peace / Wavelet `ParametricEQ.txt`
-- Export `ParametricEQ.txt`, lossless JSON, or copy the text profile to the clipboard
+- Export `ParametricEQ.txt`, back up the whole library as lossless JSON, or copy the
+  text profile to the clipboard
 - Imported preamp is honoured when it asks for extra headroom
 - Warns, without blocking, when a loaded profile was tuned for a different connection,
   codec, or ANC state than the one currently set

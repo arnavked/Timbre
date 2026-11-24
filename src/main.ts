@@ -442,9 +442,15 @@ function exportText(): void {
 }
 
 function exportJson(): void {
-  const profile = buildProfile();
-  download(`${safeName(profile.name)}.json`, exportProfilesJson([profile]), 'application/json');
-  setStatus('Exported the profile as JSON.');
+  // Backup the whole library. The curve on screen replaces its saved copy so
+  // unsaved edits are included.
+  const current = buildProfile();
+  const list = [current, ...profiles.filter((profile) => profile.id !== current.id)];
+
+  const name =
+    list.length === 1 ? `${safeName(list[0].name)}.json` : 'timbre-profiles.json';
+  download(name, exportProfilesJson(list), 'application/json');
+  setStatus(`Exported ${list.length} profile${list.length === 1 ? '' : 's'} as JSON.`);
 }
 
 async function copyText(): Promise<void> {

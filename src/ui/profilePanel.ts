@@ -160,8 +160,11 @@ export class ProfilePanel {
     const ioRow = element('div', 'io-row');
     const importBtn = this.button('Import…');
     const exportTextBtn = this.button('ParametricEQ.txt');
-    const exportJsonBtn = this.button('JSON');
+    const exportJsonBtn = this.button('Backup JSON');
     const copyBtn = this.button('Copy');
+    exportTextBtn.title = 'Export the enabled bands as AutoEQ / Equalizer APO text';
+    exportJsonBtn.title = 'Export every saved profile as lossless JSON';
+    copyBtn.title = 'Copy the ParametricEQ.txt text to the clipboard';
     ioRow.append(importBtn, exportTextBtn, exportJsonBtn, copyBtn);
 
     const fileInput = element('input');
@@ -174,7 +177,7 @@ export class ProfilePanel {
       element(
         'p',
         'note inline',
-        'Profiles stay in this browser. Export to move them to another device or into Equalizer APO, Peace, or Wavelet.',
+        'Profiles stay in this browser. ParametricEQ.txt loads into Equalizer APO, Peace, or Wavelet; Backup JSON keeps the whole library.',
       ),
     );
 
