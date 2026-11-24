@@ -38,6 +38,7 @@ export function biquad(
   gainDb: number,
   q: number,
   sampleRate: number,
+  slope?: number,
 ): Biquad {
   const f = Math.min(Math.max(freq, 10), sampleRate * 0.49);
   const w0 = (2 * Math.PI * f) / sampleRate;
@@ -77,7 +78,7 @@ export function biquad(
 
     case 'lowshelf': {
       const A = Math.pow(10, gainDb / 40);
-      const alpha = shelfAlpha(A, q, sin);
+      const alpha = shelfAlpha(A, q, sin, slope);
       const k = 2 * Math.sqrt(A) * alpha;
       return normalized(
         A * (A + 1 - (A - 1) * cos + k),
@@ -91,7 +92,7 @@ export function biquad(
 
     case 'highshelf': {
       const A = Math.pow(10, gainDb / 40);
-      const alpha = shelfAlpha(A, q, sin);
+      const alpha = shelfAlpha(A, q, sin, slope);
       const k = 2 * Math.sqrt(A) * alpha;
       return normalized(
         A * (A + 1 + (A - 1) * cos + k),
@@ -105,11 +106,32 @@ export function biquad(
   }
 }
 
-function shelfAlpha(A: number, q: number, sin: number): number {
+function shelfAlpha(A: number, q: number, sin: number, slope?: number): number {
   const sum = A + 1 / A;
-  const invS = 1 + (1 / (q * q) - 2) / sum;
-  const inside = sum * (Math.max(invS, 0.05) - 1) + 2;
+  const S = slope ?? 1 / (1 + (1 / (q * q) - 2) / sum);
+  const inside = sum * (1 / Math.max(S, 0.05) - 1) + 2;
   return (sin / 2) * Math.sqrt(Math.max(inside, 1e-6));
+}
+
+/**
+ * The Q Equalizer APO expects for a shelf with slope S:
+ *
+ *   Q = 1 / sqrt((A + 1/A) * (1/S - 1) + 2)
+ *
+ * S = 1 gives Q = 0.7071, the AutoEQ default.
+ */
+export function shelfQFromSlope(slope: number, gainDb: number): number {
+  const A = Math.pow(10, gainDb / 40);
+  const sum = A + 1 / A;
+  const inside = sum * (1 / Math.max(slope, 0.05) - 1) + 2;
+  return 1 / Math.sqrt(Math.max(inside, 1e-6));
+}
+
+/** The slope S implied by a shelf Q in an imported profile. */
+export function shelfSlopeFromQ(q: number, gainDb: number): number {
+  const A = Math.pow(10, gainDb / 40);
+  const sum = A + 1 / A;
+  return 1 / (1 + (1 / (q * q) - 2) / sum);
 }
 
 /** Magnitude response of one biquad at a frequency, in dB. */
@@ -144,7 +166,7 @@ export function combinedResponseDb(
     if (!band.enabled) continue;
     // A peaking/shelf filter at 0 dB is exactly flat; pass filters are not.
     if (bandUsesGain(band) && band.gain === 0) continue;
-    const c = biquad(band.type, band.freq, band.gain, band.q, sampleRate);
+    const c = biquad(band.type, band.freq, band.gain, band.q, sampleRate, band.slope);
     for (let i = 0; i < freqs.length; i++) {
       out[i] += magnitudeDb(c, freqs[i], sampleRate);
     }

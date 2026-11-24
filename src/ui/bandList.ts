@@ -7,7 +7,10 @@ import {
   GAIN_MIN,
   Q_MAX,
   Q_MIN,
+  SLOPE_MAX,
+  SLOPE_MIN,
   clamp,
+  isShelf,
   parseNumber,
   usesGain,
   type Band,
@@ -29,6 +32,7 @@ interface Row {
   freq: HTMLInputElement;
   gain: HTMLInputElement;
   q: HTMLInputElement;
+  qLabel: HTMLElement;
 }
 
 export class BandList {
@@ -72,6 +76,11 @@ export class BandList {
 
       row.gain.disabled = !usesGain(band.type);
 
+      const shelf = isShelf(band.type);
+      row.q.min = String(shelf ? SLOPE_MIN : Q_MIN);
+      row.q.max = String(shelf ? SLOPE_MAX : Q_MAX);
+      row.qLabel.textContent = shelf ? 'Slope' : 'Q';
+
       if (document.activeElement !== row.freq) {
         row.freq.value = String(Math.round(band.freq));
       }
@@ -79,7 +88,7 @@ export class BandList {
         row.gain.value = band.gain.toFixed(1);
       }
       if (document.activeElement !== row.q) {
-        row.q.value = band.q.toFixed(2);
+        row.q.value = (shelf ? band.slope : band.q).toFixed(2);
       }
     });
   }
@@ -114,7 +123,7 @@ export class BandList {
       <div class="fields">
         <label><span>Freq</span><input class="freq" type="number" inputmode="decimal" min="${FREQ_MIN}" max="${FREQ_MAX}" step="1" /></label>
         <label><span>Gain</span><input class="gain" type="number" inputmode="decimal" min="${GAIN_MIN}" max="${GAIN_MAX}" step="0.1" /></label>
-        <label><span>Q</span><input class="q" type="number" inputmode="decimal" min="${Q_MIN}" max="${Q_MAX}" step="0.01" /></label>
+        <label class="q-field"><span>Q</span><input class="q" type="number" inputmode="decimal" min="${Q_MIN}" max="${Q_MAX}" step="0.01" /></label>
       </div>
     `;
 
@@ -125,8 +134,9 @@ export class BandList {
     const freq = root.querySelector<HTMLInputElement>('.freq');
     const gain = root.querySelector<HTMLInputElement>('.gain');
     const q = root.querySelector<HTMLInputElement>('.q');
+    const qLabel = root.querySelector<HTMLElement>('.q-field span');
 
-    if (!swatch || !type || !channel || !power || !freq || !gain || !q) {
+    if (!swatch || !type || !channel || !power || !freq || !gain || !q || !qLabel) {
       throw new Error('Failed to build band row');
     }
 
@@ -168,8 +178,32 @@ export class BandList {
 
     bindNumber(freq, (value) => ({ freq: clamp(value, FREQ_MIN, FREQ_MAX) }));
     bindNumber(gain, (value) => ({ gain: clamp(value, GAIN_MIN, GAIN_MAX) }));
-    bindNumber(q, (value) => ({ q: clamp(value, Q_MIN, Q_MAX) }));
 
-    return { root, swatch, type, channel, power, freq, gain, q };
+    // The last field is Q for peaks and slope S for shelves, so commit to
+    // whichever one the current filter type actually uses.
+    const commitQ = () => {
+      const parsed = parseNumber(q.value);
+      if (parsed === null) {
+        this.update(this.bands);
+        return;
+      }
+      const band = this.bands.find((candidate) => candidate.id === id);
+      if (band && isShelf(band.type)) {
+        this.cb.onChange(id, { slope: clamp(parsed, SLOPE_MIN, SLOPE_MAX) });
+      } else {
+        this.cb.onChange(id, { q: clamp(parsed, Q_MIN, Q_MAX) });
+      }
+    };
+
+    q.addEventListener('change', commitQ);
+    q.addEventListener('blur', commitQ);
+    q.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        q.blur();
+      }
+    });
+
+    return { root, swatch, type, channel, power, freq, gain, q, qLabel };
   }
 }

@@ -277,7 +277,7 @@ export class AudioEngine {
     const bands = [];
     for (const band of this.bands) {
       if (!band.enabled) continue;
-      const c = biquad(band.type, band.freq, band.gain, band.q, this.sampleRate);
+      const c = biquad(band.type, band.freq, band.gain, band.q, this.sampleRate, band.slope);
       bands.push({
         b0: c.b0,
         b1: c.b1,

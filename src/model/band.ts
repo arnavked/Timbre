@@ -17,13 +17,16 @@ export interface Band {
   /** Gain in dB. Ignored by pass filters and notch. */
   gain: number;
   /**
-   * Q factor.
+   * Q factor for peaking, pass, and notch filters.
    *
-   * For shelves this is converted to an RBJ slope S, which is what AutoEQ and
-   * Equalizer APO mean by the Q on an LSC/HSC filter. Q = 0.7071 gives S = 1
-   * (the Web Audio default).
+   * Shelves ignore this and use `slope` instead.
    */
   q: number;
+  /**
+   * RBJ shelf slope S for low/high shelves. 1 is the neutral slope that
+   * AutoEQ's Q = 0.7 corresponds to. Ignored by every other filter type.
+   */
+  slope: number;
   channel: Channel;
 }
 
@@ -48,6 +51,8 @@ export const GAIN_MIN = -20;
 export const GAIN_MAX = 20;
 export const Q_MIN = 0.1;
 export const Q_MAX = 18;
+export const SLOPE_MIN = 0.3;
+export const SLOPE_MAX = 1.5;
 
 export interface FilterTypeInfo {
   value: FilterType;
@@ -69,6 +74,10 @@ export function isPassType(type: FilterType): boolean {
   return type === 'lowpass' || type === 'highpass' || type === 'notch';
 }
 
+export function isShelf(type: FilterType): boolean {
+  return type === 'lowshelf' || type === 'highshelf';
+}
+
 export function usesGain(type: FilterType): boolean {
   return !isPassType(type);
 }
@@ -79,17 +88,22 @@ export function usesGain(type: FilterType): boolean {
  */
 export function createDefaultBands(): Band[] {
   return [
-    { id: 0, enabled: true, type: 'lowshelf', freq: 105, gain: 3, q: 0.707, channel: 'stereo' },
-    { id: 1, enabled: true, type: 'peaking', freq: 320, gain: -1.5, q: 1.2, channel: 'stereo' },
-    { id: 2, enabled: true, type: 'peaking', freq: 1200, gain: 0, q: 1, channel: 'stereo' },
-    { id: 3, enabled: true, type: 'peaking', freq: 3000, gain: 1.5, q: 1.2, channel: 'stereo' },
-    { id: 4, enabled: true, type: 'highshelf', freq: 10000, gain: -2, q: 0.707, channel: 'stereo' },
-    { id: 5, enabled: false, type: 'peaking', freq: 60, gain: 0, q: 1, channel: 'stereo' },
-    { id: 6, enabled: false, type: 'peaking', freq: 600, gain: 0, q: 1, channel: 'stereo' },
-    { id: 7, enabled: false, type: 'peaking', freq: 2000, gain: 0, q: 1, channel: 'stereo' },
-    { id: 8, enabled: false, type: 'peaking', freq: 6000, gain: 0, q: 1, channel: 'stereo' },
-    { id: 9, enabled: false, type: 'peaking', freq: 15000, gain: 0, q: 1, channel: 'stereo' },
+    { id: 0, enabled: true, type: 'lowshelf', freq: 105, gain: 3, q: 0.707, slope: 1, channel: 'stereo' },
+    { id: 1, enabled: true, type: 'peaking', freq: 320, gain: -1.5, q: 1.2, slope: 1, channel: 'stereo' },
+    { id: 2, enabled: true, type: 'peaking', freq: 1200, gain: 0, q: 1, slope: 1, channel: 'stereo' },
+    { id: 3, enabled: true, type: 'peaking', freq: 3000, gain: 1.5, q: 1.2, slope: 1, channel: 'stereo' },
+    { id: 4, enabled: true, type: 'highshelf', freq: 10000, gain: -2, q: 0.707, slope: 1, channel: 'stereo' },
+    { id: 5, enabled: false, type: 'peaking', freq: 60, gain: 0, q: 1, slope: 1, channel: 'stereo' },
+    { id: 6, enabled: false, type: 'peaking', freq: 600, gain: 0, q: 1, slope: 1, channel: 'stereo' },
+    { id: 7, enabled: false, type: 'peaking', freq: 2000, gain: 0, q: 1, slope: 1, channel: 'stereo' },
+    { id: 8, enabled: false, type: 'peaking', freq: 6000, gain: 0, q: 1, slope: 1, channel: 'stereo' },
+    { id: 9, enabled: false, type: 'peaking', freq: 15000, gain: 0, q: 1, slope: 1, channel: 'stereo' },
   ];
+}
+
+/** A disabled peaking band, used to pad imports up to BAND_COUNT. */
+export function blankBand(id: number): Band {
+  return { id, enabled: false, type: 'peaking', freq: 1000, gain: 0, q: 1, slope: 1, channel: 'stereo' };
 }
 
 export function cloneBands(bands: Band[]): Band[] {

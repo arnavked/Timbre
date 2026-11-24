@@ -207,7 +207,7 @@ export class EQGraph {
     for (const band of this.bands) {
       if (!band.enabled) continue;
       const color = BAND_COLORS[band.id % BAND_COLORS.length];
-      const coeffs = biquad(band.type, band.freq, band.gain, band.q, this.sampleRate);
+      const coeffs = biquad(band.type, band.freq, band.gain, band.q, this.sampleRate, band.slope);
 
       g.beginPath();
       for (let i = 0; i < freqs.length; i++) {
@@ -229,7 +229,7 @@ export class EQGraph {
     const freqs = this.sampleFrequencies();
     const coeffs = this.bands
       .filter((band) => band.enabled)
-      .map((band) => biquad(band.type, band.freq, band.gain, band.q, this.sampleRate));
+      .map((band) => biquad(band.type, band.freq, band.gain, band.q, this.sampleRate, band.slope));
 
     const points: Point[] = [];
     for (const freq of freqs) {

@@ -10,9 +10,10 @@ your machine.
 
 ## Status
 
-**M1 — Engine.** Ten bands, every filter type, a biquad cascade in an `AudioWorklet`,
-per-channel routing, undo/redo, and level-matched A/B. The rendered output matches the
-analytic curve within 0.03 dB.
+**M2 — Profiles.** Ten bands in an `AudioWorklet`, per-channel routing, undo, level-matched
+A/B, and a profile library with `ParametricEQ.txt` and lossless JSON import/export. The
+rendered output matches the analytic curve within 0.03 dB, and an exported profile
+re-imports to the same response.
 
 ## Run it
 
@@ -35,13 +36,21 @@ npm run typecheck  # types only
 - 10 parametric bands: peak, low shelf, high shelf, low pass, high pass, notch
 - Per-band channel routing: stereo, left, or right
 - Drag a node on the graph to set frequency and gain; drag vertically on pass filters to set Q
-- Shelf Q is converted to the RBJ slope `S`, so shelves behave like the exported profile
+- Shelves expose the RBJ slope `S` directly, and export converts it to the Q Equalizer APO expects
 - Automatic preamp: offsets the largest boost so nothing clips
 - Click-free bypass with RMS gain matching, so A/B compares tone rather than loudness
 - Undo/redo with `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z`, or `Ctrl/Cmd+Y` (50 steps)
 - The audio device is released whenever nothing is playing, so USB and Bluetooth
   headsets don't idle-hiss
 - Live output peak meter
+- Save, load, duplicate, and delete profiles with a device key
+  (model + connection + codec + ANC)
+- Profiles live in IndexedDB and never leave the browser
+- Import AutoEQ / Equalizer APO / Peace / Wavelet `ParametricEQ.txt`
+- Export `ParametricEQ.txt`, lossless JSON, or copy the text profile to the clipboard
+- Imported preamp is honoured when it asks for extra headroom
+- Warns, without blocking, when a loaded profile was tuned for a different connection,
+  codec, or ANC state than the one currently set
 
 ## Architecture
 
@@ -55,11 +64,18 @@ src/
     engine.ts          Web Audio graph, sources, gain matching
     worklet/
       biquad-processor.ts   AudioWorklet cascade (transposed DF-II)
+  formats/
+    parametric.ts      ParametricEQ.txt parse + export
+    profileJson.ts     lossless profile JSON
+  storage/
+    profiles.ts        IndexedDB profile store
   model/
     band.ts            Band model, defaults, formatting helpers
+    profile.ts         Profile + device key model, validation
   ui/
     graph.ts           canvas response plot + pointer interaction
     bandList.ts        per-band controls
+    profilePanel.ts    profile library and import/export UI
 ```
 
 Signal flow:
@@ -80,7 +96,10 @@ interpolating coefficients directly.
 
 ## Known gaps (by design, for now)
 
-- No persistence, import, export, measurement overlay, or solver yet — those are M2/M3.
+- No measurement overlay, target curves, or auto-fit solver yet — those are M3.
+- No lookahead limiter, service worker, or full accessibility pass yet — M4.
+- `ParametricEQ.txt` carries the enabled bands only. JSON is the lossless format for
+  disabled bands, per-channel routing, and shelf slopes.
 - Desktop-first. Mobile works but the layout is tighter.
 
 ## Roadmap
@@ -89,7 +108,7 @@ interpolating coefficients directly.
 |---|---|
 | M0 | Playback, preamp, 5 bands, graph ✅ |
 | M1 | AudioWorklet cascade, 10 bands, all filter types, per-channel, undo, gain-matched A/B ✅ |
-| M2 | Profiles, `ParametricEQ.txt` import/export, Equalizer APO export |
+| M2 | Profiles, `ParametricEQ.txt` import/export, JSON, device keys ✅ |
 | M3 | Measurement CSV overlay, target curves, auto-fit solver |
 | M4 | Limiter, PWA, accessibility pass |
 

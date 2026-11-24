@@ -60,19 +60,46 @@
 
         <aside class="panel">
           <div class="panel-head">
-            <h2>Bands</h2>
+            <div class="tabs" role="tablist" aria-label="Editor panel">
+              <button
+                id="tab-bands"
+                class="tab"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="pane-bands"
+              >
+                Bands
+              </button>
+              <button
+                id="tab-profile"
+                class="tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="pane-profile"
+                tabindex="-1"
+              >
+                Profile
+              </button>
+            </div>
             <div class="preamp">
               Preamp
               <strong id="preamp">0.0 dB</strong>
             </div>
           </div>
 
-          <div id="bands" class="bands"></div>
+          <div id="pane-bands" class="pane" role="tabpanel" aria-labelledby="tab-bands">
+            <div id="bands" class="bands"></div>
+            <p class="note">
+              Preamp is automatic: it offsets your largest boost so the signal has headroom and
+              nothing clips.
+            </p>
+          </div>
 
-          <p class="note">
-            Preamp is automatic: it offsets your largest boost so the signal has headroom and
-            nothing clips.
-          </p>
+          <div id="pane-profile" class="pane" role="tabpanel" aria-labelledby="tab-profile" hidden>
+            <div id="profile-panel" class="profile-panel"></div>
+          </div>
         </aside>
       </main>
     </div>
