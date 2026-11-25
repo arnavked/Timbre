@@ -2,9 +2,14 @@ import './style.css';
 
 import { autoPreampDb, biquad, combinedResponseDb, logSpace, magnitudeDb } from './audio/dsp';
 import { AudioEngine, type TestSignal } from './audio/engine';
+import { fitBands, type FitResult } from './audio/fit';
 import { exportParametricEq, parseParametricEq } from './formats/parametric';
 import { exportProfilesJson, parseProfilesJson } from './formats/profileJson';
 import {
+  BAND_COUNT,
+  FREQ_MAX,
+  FREQ_MIN,
+  blankBand,
   clamp,
   cloneBands,
   createDefaultBands,
@@ -12,15 +17,37 @@ import {
   type Band,
 } from './model/band';
 import {
+  cloneMeasurement,
+  measurementCurve,
+  parseMeasurementCsv,
+  valueAt,
+  type Measurement,
+} from './model/measurement';
+import {
   deviceSummary,
   emptyDevice,
   newId,
   type DeviceKey,
   type Profile,
 } from './model/profile';
+import {
+  DEFAULT_ADJUST,
+  TARGET_CUSTOM,
+  TARGET_NONE,
+  clampAdjust,
+  targetCurve,
+  type CustomTarget,
+  type TargetAdjust,
+} from './model/target';
 import { listProfiles, putProfile, removeProfile } from './storage/profiles';
 import { BandList } from './ui/bandList';
-import { EQGraph } from './ui/graph';
+import { EQGraph, type GraphOverlay, type OverlayCurve } from './ui/graph';
+import {
+  DEFAULT_FIT,
+  MeasurePanel,
+  type FitSettings,
+  type MeasureView,
+} from './ui/measurePanel';
 import { ProfilePanel } from './ui/profilePanel';
 
 function must<T extends Element>(selector: string): T {
@@ -49,12 +76,17 @@ const undoBtn = must<HTMLButtonElement>('#btn-undo');
 const redoBtn = must<HTMLButtonElement>('#btn-redo');
 
 const tabBands = must<HTMLButtonElement>('#tab-bands');
+const tabMeasure = must<HTMLButtonElement>('#tab-measure');
 const tabProfile = must<HTMLButtonElement>('#tab-profile');
 const paneBands = must<HTMLElement>('#pane-bands');
+const paneMeasure = must<HTMLElement>('#pane-measure');
 const paneProfile = must<HTMLElement>('#pane-profile');
 const profilePanelEl = must<HTMLElement>('#profile-panel');
+const measurePanelEl = must<HTMLElement>('#measure-panel');
 
 const engine = new AudioEngine();
+
+const DEFAULT_TARGET_ID = 'harman-oe-2018';
 
 const state = {
   bands: createDefaultBands(),
@@ -62,6 +94,18 @@ const state = {
   preamp: 0,
   /** Preamp from an imported file, honoured when it asks for more headroom. */
   preampOverride: null as number | null,
+
+  // --- measurement / target overlay -----------------------------------------
+  measurement: null as Measurement | null,
+  targetId: DEFAULT_TARGET_ID as string,
+  targetAdjust: { ...DEFAULT_ADJUST } as TargetAdjust,
+  customTarget: null as CustomTarget | null,
+  showTarget: true,
+  showMeasured: true,
+  fit: { ...DEFAULT_FIT } as FitSettings,
+  /** Before/after RMS from the most recent fit, in dB. */
+  lastFit: null as { before: number; after: number } | null,
+  notice: null as string | null,
 };
 
 const profileState = {
@@ -156,6 +200,239 @@ function applyBands(): void {
   bandList.update(state.bands);
 
   preampEl.textContent = `${state.preamp.toFixed(1)} dB`;
+
+  const { overlay, liveRms } = buildOverlay();
+  graph.setOverlay(overlay);
+  measurePanel.update(measureView(liveRms));
+}
+
+// ------------------------------------------------------- measurement overlay
+
+const OVERLAY_POINTS = 240;
+
+/**
+ * Build the graph overlay: the dashed target, the measured curve, and the
+ * residual (measured + EQ − target; positive means the result sits above the
+ * target). Also returns the live RMS over the fit window.
+ */
+function buildOverlay(): { overlay: GraphOverlay; liveRms: number | null } {
+  const freqs = logSpace(FREQ_MIN, FREQ_MAX, OVERLAY_POINTS);
+  const hasTarget = state.targetId !== TARGET_NONE;
+
+  const targetDb = hasTarget
+    ? targetCurve(state.targetId, state.targetAdjust, freqs, engine.sampleRate, state.customTarget)
+    : null;
+  const measuredDb = state.measurement
+    ? measurementCurve(state.measurement, freqs)
+    : null;
+
+  const target: OverlayCurve | null =
+    targetDb && state.showTarget ? { freqs, db: targetDb } : null;
+  const measured: OverlayCurve | null =
+    measuredDb && state.showMeasured ? { freqs, db: measuredDb } : null;
+
+  let residual: OverlayCurve | null = null;
+  let liveRms: number | null = null;
+
+  if (targetDb && measuredDb) {
+    const eq = combinedResponseDb(state.bands, freqs, engine.sampleRate);
+    const res = freqs.map((_, i) => measuredDb[i] + eq[i] - targetDb[i]);
+    residual = { freqs, db: res };
+
+    const lo = Math.min(state.fit.windowMin, state.fit.windowMax);
+    const hi = Math.max(state.fit.windowMin, state.fit.windowMax);
+    let sum = 0;
+    let count = 0;
+    for (let i = 0; i < freqs.length; i++) {
+      if (freqs[i] < lo || freqs[i] > hi) continue;
+      sum += res[i] * res[i];
+      count += 1;
+    }
+    if (count > 0) liveRms = Math.sqrt(sum / count);
+  }
+
+  return { overlay: { target, measured, residual }, liveRms };
+}
+
+function measureView(liveRms: number | null): MeasureView {
+  return {
+    targetId: state.targetId,
+    adjust: state.targetAdjust,
+    customTarget: state.customTarget,
+    showTarget: state.showTarget,
+    measurement: state.measurement,
+    showMeasured: state.showMeasured,
+    fit: state.fit,
+    fitResult: state.lastFit,
+    liveRms,
+    notice: state.notice,
+  };
+}
+
+function sanitizeFit(fit: FitSettings): FitSettings {
+  const clampN = (value: number, min: number, max: number, fallback: number) =>
+    Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+
+  let windowMin = clampN(fit.windowMin, 20, 20000, 20);
+  let windowMax = clampN(fit.windowMax, 20, 20000, 20000);
+  if (windowMax - windowMin < 10) {
+    windowMax = Math.min(20000, windowMin + 10);
+    windowMin = Math.min(windowMin, windowMax - 10);
+  }
+  let gainMin = clampN(fit.gainMin, -20, 20, -15);
+  let gainMax = clampN(fit.gainMax, -20, 20, 12);
+  if (gainMin > gainMax) [gainMin, gainMax] = [gainMax, gainMin];
+  let qMin = clampN(fit.qMin, 0.1, 18, 0.3);
+  let qMax = clampN(fit.qMax, 0.1, 18, 8);
+  if (qMin > qMax) [qMin, qMax] = [qMax, qMin];
+
+  return {
+    count: Math.round(clampN(fit.count, 1, BAND_COUNT, 10)),
+    windowMin,
+    windowMax,
+    freqMin: windowMin,
+    freqMax: windowMax,
+    gainMin,
+    gainMax,
+    qMin,
+    qMax,
+    penalty: clampN(fit.penalty, 0, 1, 0.15),
+  };
+}
+
+async function loadMeasurementFile(file: File): Promise<void> {
+  let text: string;
+  try {
+    text = await file.text();
+  } catch (error) {
+    setStatus(`Could not read ${file.name}: ${messageOf(error)}`);
+    return;
+  }
+
+  const parsed = parseMeasurementCsv(text);
+  if (parsed.points.length === 0) {
+    state.notice = parsed.warnings[0] ?? 'No frequency / level pairs found in that file.';
+    applyBands();
+    setStatus(`Could not read a measurement from ${file.name}.`);
+    return;
+  }
+
+  state.measurement = {
+    id: `m-${Date.now().toString(36)}`,
+    name: file.name.replace(/\.(csv|txt)$/i, '') || 'Measurement',
+    points: parsed.points,
+    source: file.name,
+    normalize: '1k',
+    smoothing: '1/12',
+  };
+  state.notice = parsed.warnings.length > 0 ? parsed.warnings.join(' ') : null;
+  state.lastFit = null;
+  state.showMeasured = true;
+
+  applyBands();
+  markDirty();
+  selectTab('measure');
+  setStatus(`Loaded ${parsed.points.length} points from ${file.name}.`);
+}
+
+async function loadCustomTarget(file: File): Promise<void> {
+  let text: string;
+  try {
+    text = await file.text();
+  } catch (error) {
+    setStatus(`Could not read ${file.name}: ${messageOf(error)}`);
+    return;
+  }
+
+  const parsed = parseMeasurementCsv(text);
+  if (parsed.points.length < 4) {
+    setStatus(parsed.warnings[0] ?? `No usable target data in ${file.name}.`);
+    return;
+  }
+
+  // Custom targets are stored as a shape relative to 1 kHz, like the built-ins.
+  const offset = valueAt(parsed.points, 1000);
+  const points = parsed.points.map(([freq, db]) => [freq, db - offset] as [number, number]);
+
+  state.customTarget = { name: file.name.replace(/\.(csv|txt)$/i, '') || 'Custom target', points };
+  state.targetId = TARGET_CUSTOM;
+  state.showTarget = true;
+  state.lastFit = null;
+  state.notice = parsed.warnings.length > 0 ? parsed.warnings.join(' ') : null;
+
+  applyBands();
+  markDirty();
+  selectTab('measure');
+  setStatus(`Loaded custom target from ${file.name}.`);
+}
+
+function runFit(): void {
+  if (!state.measurement) {
+    setStatus('Load a measurement before fitting.');
+    return;
+  }
+  if (state.targetId === TARGET_NONE) {
+    setStatus('Pick a target before fitting.');
+    return;
+  }
+
+  const fit = sanitizeFit(state.fit);
+  const freqs = logSpace(FREQ_MIN, FREQ_MAX, 480);
+  const measuredDb = measurementCurve(state.measurement, freqs, { smooth: false });
+  const targetDb = targetCurve(
+    state.targetId,
+    state.targetAdjust,
+    freqs,
+    engine.sampleRate,
+    state.customTarget,
+  );
+
+  const started = performance.now();
+  let result: FitResult | null = null;
+  try {
+    result = fitBands({
+      freqs,
+      targetDb,
+      measuredDb,
+      options: {
+        count: fit.count,
+        freqMin: fit.windowMin,
+        freqMax: fit.windowMax,
+        windowMin: fit.windowMin,
+        windowMax: fit.windowMax,
+        qMin: fit.qMin,
+        qMax: fit.qMax,
+        gainMin: fit.gainMin,
+        gainMax: fit.gainMax,
+        penalty: fit.penalty,
+        sampleRate: engine.sampleRate,
+      },
+    });
+  } catch (error) {
+    setStatus(`Fit failed: ${messageOf(error)}`);
+    return;
+  }
+  if (!result) return;
+  const elapsed = performance.now() - started;
+
+  const before = cloneBands(state.bands);
+  state.bands = Array.from({ length: BAND_COUNT }, (_, index) => {
+    const fitted = result.bands[index];
+    return fitted ? { ...fitted, id: index } : blankBand(index);
+  });
+  state.preampOverride = null;
+  state.lastFit = { before: result.before, after: result.after };
+
+  applyBands();
+  recordHistory(before);
+  markDirty();
+  selectBand(null);
+
+  const placed = result.bands.length;
+  setStatus(
+    `Fitted ${placed} band${placed === 1 ? '' : 's'} in ${Math.round(elapsed)} ms — RMS ` +
+      `${result.before.toFixed(2)} → ${result.after.toFixed(2)} dB.`,
+  );
 }
 
 function applyPatch(id: number, patch: Partial<Omit<Band, 'id'>>): boolean {
@@ -222,6 +499,10 @@ function buildProfile(): Profile {
     device: { ...profileState.device },
     preamp: state.preamp,
     bands: cloneBands(state.bands),
+    targetId: state.targetId,
+    targetAdjust: { ...state.targetAdjust },
+    ...(state.customTarget ? { customTarget: state.customTarget } : {}),
+    ...(state.measurement ? { measurement: cloneMeasurement(state.measurement) } : {}),
   };
 }
 
@@ -259,6 +540,7 @@ function loadProfile(id: string): void {
   const before = cloneBands(state.bands);
   profilePanel.hideNotice();
   state.bands = cloneBands(profile.bands);
+  applyProfileContext(profile);
   // Keep the saved preamp so a profile that was imported with extra headroom
   // sounds the same when it is loaded back.
   state.preampOverride = profile.preamp;
@@ -276,6 +558,23 @@ function loadProfile(id: string): void {
   if (warning) profilePanel.showNotice(warning);
 
   setStatus(`Loaded “${profile.name}” — ${deviceSummary(profile.device)}.`);
+}
+
+/** Restore the measurement/target context stored with a profile. */
+function applyProfileContext(profile: Profile): void {
+  state.targetId = profile.targetId ?? TARGET_NONE;
+  state.targetAdjust = profile.targetAdjust
+    ? { ...profile.targetAdjust }
+    : { ...DEFAULT_ADJUST };
+  state.customTarget = profile.customTarget
+    ? {
+        ...profile.customTarget,
+        points: profile.customTarget.points.map(([freq, db]) => [freq, db] as [number, number]),
+      }
+    : null;
+  state.measurement = profile.measurement ? cloneMeasurement(profile.measurement) : null;
+  state.lastFit = null;
+  state.notice = null;
 }
 
 /**
@@ -304,6 +603,12 @@ function startNewProfile(): void {
   profilePanel.hideNotice();
   state.bands = createDefaultBands();
   state.preampOverride = null;
+  state.measurement = null;
+  state.targetId = DEFAULT_TARGET_ID;
+  state.targetAdjust = { ...DEFAULT_ADJUST };
+  state.customTarget = null;
+  state.lastFit = null;
+  state.notice = null;
   profileState.id = null;
   profileState.name = 'Untitled curve';
   profileState.device = emptyDevice();
@@ -376,6 +681,7 @@ function importText(text: string, fileName: string): void {
   profilePanel.hideNotice();
   state.bands = parsed.bands;
   state.preampOverride = parsed.preamp;
+  state.lastFit = null;
   profileState.id = null;
   profileState.name = baseName(fileName);
   profileState.dirty = true;
@@ -413,6 +719,7 @@ async function importJson(text: string, fileName: string): Promise<void> {
   const before = cloneBands(state.bands);
   profilePanel.hideNotice();
   state.bands = cloneBands(profile.bands);
+  applyProfileContext(profile);
   state.preampOverride = profile.preamp;
   profileState.id = isBackup ? profile.id : null;
   profileState.name = profile.name;
@@ -498,14 +805,20 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function selectTab(which: 'bands' | 'profile'): void {
-  const bands = which === 'bands';
-  tabBands.setAttribute('aria-selected', String(bands));
-  tabProfile.setAttribute('aria-selected', String(!bands));
-  tabBands.tabIndex = bands ? 0 : -1;
-  tabProfile.tabIndex = bands ? -1 : 0;
-  paneBands.hidden = !bands;
-  paneProfile.hidden = bands;
+type TabName = 'bands' | 'measure' | 'profile';
+
+function selectTab(which: TabName): void {
+  const tabs: Array<{ name: TabName; tab: HTMLButtonElement; pane: HTMLElement }> = [
+    { name: 'bands', tab: tabBands, pane: paneBands },
+    { name: 'measure', tab: tabMeasure, pane: paneMeasure },
+    { name: 'profile', tab: tabProfile, pane: paneProfile },
+  ];
+  for (const item of tabs) {
+    const active = item.name === which;
+    item.tab.setAttribute('aria-selected', String(active));
+    item.tab.tabIndex = active ? 0 : -1;
+    item.pane.hidden = !active;
+  }
 }
 
 // -------------------------------------------------------------------- audio
@@ -551,6 +864,52 @@ const profilePanel = new ProfilePanel(profilePanelEl, {
   onExportText: exportText,
   onExportJson: exportJson,
   onCopy: () => void copyText(),
+});
+
+const measurePanel = new MeasurePanel(measurePanelEl, {
+  onTarget: (targetId) => {
+    state.targetId = targetId;
+    state.lastFit = null;
+    state.notice = null;
+    applyBands();
+    markDirty();
+  },
+  onAdjust: (patch) => {
+    state.targetAdjust = clampAdjust({ ...state.targetAdjust, ...patch });
+    state.lastFit = null;
+    applyBands();
+    markDirty();
+  },
+  onToggleTarget: (show) => {
+    state.showTarget = show;
+    applyBands();
+  },
+  onMeasurementFile: (file) => void loadMeasurementFile(file),
+  onRemoveMeasurement: () => {
+    state.measurement = null;
+    state.lastFit = null;
+    state.notice = null;
+    applyBands();
+    markDirty();
+    setStatus('Measurement removed.');
+  },
+  onMeasurementOption: (patch) => {
+    if (!state.measurement) return;
+    state.measurement = { ...state.measurement, ...patch };
+    state.lastFit = null;
+    applyBands();
+    markDirty();
+  },
+  onToggleMeasured: (show) => {
+    state.showMeasured = show;
+    applyBands();
+  },
+  onFitSettings: (patch) => {
+    state.fit = sanitizeFit({ ...state.fit, ...patch });
+    applyBands();
+  },
+  onFit: runFit,
+  onTargetFile: (file) => void loadCustomTarget(file),
 });
 
 let lastLabel = '';
@@ -643,15 +1002,25 @@ undoBtn.addEventListener('click', undo);
 redoBtn.addEventListener('click', redo);
 
 tabBands.addEventListener('click', () => selectTab('bands'));
+tabMeasure.addEventListener('click', () => selectTab('measure'));
 tabProfile.addEventListener('click', () => selectTab('profile'));
 
-for (const tab of [tabBands, tabProfile]) {
+const TAB_ORDER: TabName[] = ['bands', 'measure', 'profile'];
+const TAB_BUTTONS: Record<TabName, HTMLButtonElement> = {
+  bands: tabBands,
+  measure: tabMeasure,
+  profile: tabProfile,
+};
+
+for (const name of TAB_ORDER) {
+  const tab = TAB_BUTTONS[name];
   tab.addEventListener('keydown', (event) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     event.preventDefault();
-    const next = tab === tabBands ? 'profile' : 'bands';
+    const step = event.key === 'ArrowRight' ? 1 : TAB_ORDER.length - 1;
+    const next = TAB_ORDER[(TAB_ORDER.indexOf(name) + step) % TAB_ORDER.length];
     selectTab(next);
-    (next === 'bands' ? tabBands : tabProfile).focus();
+    TAB_BUTTONS[next].focus();
   });
 }
 
@@ -771,8 +1140,12 @@ if (import.meta.env.DEV) {
     applyBands,
     bandList,
     graph,
+    measurePanel,
     dsp: { biquad, magnitudeDb, combinedResponseDb, autoPreampDb, logSpace },
     formats: { parseParametricEq, exportParametricEq, parseProfilesJson, exportProfilesJson },
+    fit: { fitBands },
+    measure: { parseMeasurementCsv, measurementCurve, valueAt },
+    target: { targetCurve },
     profileState,
     profiles: () => profiles,
     saveProfile,
@@ -780,5 +1153,9 @@ if (import.meta.env.DEV) {
     importText,
     importJson,
     exportText,
+    runFit,
+    loadMeasurementFile,
+    loadCustomTarget,
+    selectTab,
   };
 }

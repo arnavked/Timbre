@@ -10,10 +10,12 @@ your machine.
 
 ## Status
 
-**M2 — Profiles.** Ten bands in an `AudioWorklet`, per-channel routing, undo, level-matched
-A/B, and a profile library with `ParametricEQ.txt` and lossless JSON import/export. The
-rendered output matches the analytic curve within 0.03 dB, and an exported profile
-re-imports to the same response.
+**M3 — Measurement-driven design.** Load a headphone measurement, overlay a built-in or
+custom target, and auto-fit a correction curve in one click. Ten bands in an `AudioWorklet`,
+per-channel routing, undo, level-matched A/B, and a profile library with `ParametricEQ.txt`
+and lossless JSON import/export. The bundled targets match AutoEQ's published curves within
+0.05 dB; a 10-band fit runs in under 150 ms and typically cuts residual error from ~4 dB to
+under 1 dB.
 
 ## Run it
 
@@ -52,6 +54,18 @@ npm run typecheck  # types only
 - Imported preamp is honoured when it asks for extra headroom
 - Warns, without blocking, when a loaded profile was tuned for a different connection,
   codec, or ANC state than the one currently set
+- Import a measurement from Squig.link, REW, AutoEQ, or any `freq, dB` table
+  (comma, semicolon, tab, or whitespace; headers and comments are skipped)
+- Normalise the measurement to 1 kHz, 500 Hz, a 200–2 kHz mean, or a custom reference,
+  with 1/12, 1/6, or 1/3-octave display smoothing
+- Three built-in targets — Harman over-ear 2018, Harman in-ear 2019, diffuse field — plus
+  flat, none, and a custom target loaded from CSV
+- Shape the target with tilt, bass, treble, and ear-gain offsets (±4–6 dB)
+- Auto-fit 4–10 peaking bands to the measured-vs-target correction, with editable gain and
+  Q limits, then keep tweaking the fitted bands like any others
+- Live residual strip, residual RMS, and a before → after readout for each fit
+- Measurement and target travel with the profile, so overlays survive a reload and a
+  JSON round-trip
 
 ## Architecture
 
@@ -63,6 +77,7 @@ src/
   audio/
     dsp.ts             RBJ biquads, magnitude response, auto-preamp
     engine.ts          Web Audio graph, sources, gain matching
+    fit.ts             deterministic multi-band auto-fit solver
     worklet/
       biquad-processor.ts   AudioWorklet cascade (transposed DF-II)
   formats/
@@ -72,10 +87,14 @@ src/
     profiles.ts        IndexedDB profile store
   model/
     band.ts            Band model, defaults, formatting helpers
+    measurement.ts     measurement CSV parsing, normalisation, smoothing
+    target.ts          target selection, shape adjustments, custom targets
+    targets.ts         bundled AutoEQ target data (121-point grid)
     profile.ts         Profile + device key model, validation
   ui/
-    graph.ts           canvas response plot + pointer interaction
+    graph.ts           canvas response plot, overlays, pointer interaction
     bandList.ts        per-band controls
+    measurePanel.ts    measurement, target, and auto-fit UI
     profilePanel.ts    profile library and import/export UI
 ```
 
@@ -97,10 +116,12 @@ interpolating coefficients directly.
 
 ## Known gaps (by design, for now)
 
-- No measurement overlay, target curves, or auto-fit solver yet — those are M3.
+- The auto-fit solver places peaking bands only; shelves are still a manual choice.
+- Targets are sampled on a 12-points-per-octave grid, so extreme narrow features are
+  smoothed to that resolution (measured error stays under 0.1 dB).
 - No lookahead limiter, service worker, or full accessibility pass yet — M4.
 - `ParametricEQ.txt` carries the enabled bands only. JSON is the lossless format for
-  disabled bands, per-channel routing, and shelf slopes.
+  disabled bands, per-channel routing, shelf slopes, and the measurement/target context.
 - Desktop-first. Mobile works but the layout is tighter.
 
 ## Roadmap
@@ -110,7 +131,7 @@ interpolating coefficients directly.
 | M0 | Playback, preamp, 5 bands, graph ✅ |
 | M1 | AudioWorklet cascade, 10 bands, all filter types, per-channel, undo, gain-matched A/B ✅ |
 | M2 | Profiles, `ParametricEQ.txt` import/export, JSON, device keys ✅ |
-| M3 | Measurement CSV overlay, target curves, auto-fit solver |
+| M3 | Measurement CSV overlay, target curves, auto-fit solver ✅ |
 | M4 | Limiter, PWA, accessibility pass |
 
 See [`PRD.md`](./PRD.md) for the full requirements.

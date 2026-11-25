@@ -14,6 +14,13 @@ import {
   type Channel,
   type FilterType,
 } from './band';
+import { normalizeMeasurement, type Measurement } from './measurement';
+import {
+  normalizeAdjust,
+  normalizeCustomTarget,
+  type CustomTarget,
+  type TargetAdjust,
+} from './target';
 
 export type Connection = 'wired' | 'bluetooth' | 'usb';
 export type AncMode = 'on' | 'off' | 'transparency';
@@ -37,6 +44,19 @@ export interface Profile {
   /** Effective preamp at save time, in dB. */
   preamp: number;
   bands: Band[];
+  /** Selected target id, so the design context survives a reload. */
+  targetId?: string;
+  /** Target shape offsets (tilt, bass, treble, ear gain). */
+  targetAdjust?: TargetAdjust;
+  /** Inline custom target, when one was imported. */
+  customTarget?: CustomTarget;
+  /**
+   * Inline measurement snapshot.
+   *
+   * The PRD sketched a `measurementId`, but storing the points with the profile
+   * means overlays survive a reload and a JSON round-trip without a second store.
+   */
+  measurement?: Measurement;
   notes?: string;
 }
 
@@ -154,6 +174,9 @@ export function normalizeProfile(raw: unknown): Profile | null {
   const now = new Date().toISOString();
   const name = typeof value.name === 'string' && value.name.trim() ? value.name.trim() : 'Untitled curve';
 
+  const customTarget = normalizeCustomTarget(value.customTarget);
+  const measurement = normalizeMeasurement(value.measurement);
+
   return {
     schemaVersion: 1,
     id: typeof value.id === 'string' && value.id ? value.id : newId(),
@@ -163,6 +186,10 @@ export function normalizeProfile(raw: unknown): Profile | null {
     device: normalizeDevice(value.device),
     preamp: numberOr(value.preamp, 0),
     bands: normalizeBands(value.bands),
+    ...(typeof value.targetId === 'string' ? { targetId: value.targetId } : {}),
+    ...(value.targetAdjust ? { targetAdjust: normalizeAdjust(value.targetAdjust) } : {}),
+    ...(customTarget ? { customTarget } : {}),
+    ...(measurement ? { measurement } : {}),
     ...(typeof value.notes === 'string' ? { notes: value.notes.slice(0, 2000) } : {}),
   };
 }

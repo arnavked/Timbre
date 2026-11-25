@@ -20,7 +20,27 @@ const POINTS = 360;
 const GRID_FREQS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000];
 const GRID_DB = [-24, -18, -12, -6, 0, 6, 12, 18, 24];
 
+const OVERLAY_TARGET = '#93a4b8';
+const OVERLAY_MEASURED = '#57c6bf';
+const RESIDUAL_ABOVE = 'rgba(224, 135, 111, 0.34)';
+const RESIDUAL_BELOW = 'rgba(111, 168, 220, 0.32)';
+const RESIDUAL_HEIGHT = 34;
+const RESIDUAL_SCALE = 6;
+
 export type BandPatch = Partial<Pick<Band, 'freq' | 'gain' | 'q'>>;
+
+/** A curve sampled on its own frequency grid, in dB. */
+export interface OverlayCurve {
+  freqs: number[];
+  db: number[];
+}
+
+export interface GraphOverlay {
+  target: OverlayCurve | null;
+  measured: OverlayCurve | null;
+  /** measured + EQ − target. */
+  residual: OverlayCurve | null;
+}
 
 export interface GraphCallbacks {
   onChange(id: number, patch: BandPatch): void;
@@ -48,6 +68,7 @@ export class EQGraph {
   private hoverId: number | null = null;
   private width = 0;
   private height = 0;
+  private overlay: GraphOverlay = { target: null, measured: null, residual: null };
 
   constructor(canvas: HTMLCanvasElement, callbacks: GraphCallbacks) {
     const ctx = canvas.getContext('2d');
@@ -78,6 +99,11 @@ export class EQGraph {
 
   setSelected(id: number | null): void {
     this.selectedId = id;
+    this.draw();
+  }
+
+  setOverlay(overlay: GraphOverlay): void {
+    this.overlay = overlay;
     this.draw();
   }
 
@@ -140,9 +166,12 @@ export class EQGraph {
 
     g.clearRect(0, 0, this.width, this.height);
     this.drawGrid(g);
+    this.drawResidual(g);
+    this.drawOverlayCurves(g);
     this.drawBandCurves(g);
     this.drawCombined(g);
     this.drawHandles(g);
+    this.drawLegend(g);
     this.drawDragLabel(g);
   }
 
@@ -190,6 +219,138 @@ export class EQGraph {
   private gridLabel(freq: number): string {
     if (freq >= 1000) return `${freq / 1000}k`;
     return String(freq);
+  }
+
+  private drawResidual(g: CanvasRenderingContext2D): void {
+    const residual = this.overlay.residual;
+    if (!residual || residual.freqs.length < 2) return;
+
+    const { left, top } = this.pad;
+    const height = Math.min(RESIDUAL_HEIGHT, this.plotHeight * 0.35);
+    const bottom = top + height;
+    const mid = top + height / 2;
+
+    const points = residual.freqs.map((freq, i) => ({
+      x: this.freqToX(freq),
+      y: mid - (clamp(residual.db[i], -RESIDUAL_SCALE, RESIDUAL_SCALE) / RESIDUAL_SCALE) * (height / 2 - 3),
+    }));
+
+    g.save();
+    g.fillStyle = 'rgba(9, 11, 14, 0.82)';
+    g.fillRect(left, top, this.plotWidth, height);
+
+    const fill = (clipTop: number, clipBottom: number, color: string) => {
+      g.save();
+      g.beginPath();
+      g.rect(left, clipTop, this.plotWidth, clipBottom - clipTop);
+      g.clip();
+      g.beginPath();
+      g.moveTo(points[0].x, mid);
+      for (const point of points) g.lineTo(point.x, point.y);
+      g.lineTo(points[points.length - 1].x, mid);
+      g.closePath();
+      g.fillStyle = color;
+      g.fill();
+      g.restore();
+    };
+    fill(top, mid, RESIDUAL_ABOVE);
+    fill(mid, bottom, RESIDUAL_BELOW);
+
+    g.beginPath();
+    points.forEach((point, i) => (i === 0 ? g.moveTo(point.x, point.y) : g.lineTo(point.x, point.y)));
+    g.strokeStyle = 'rgba(201, 211, 222, 0.8)';
+    g.lineWidth = 1;
+    g.stroke();
+
+    g.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+    g.beginPath();
+    g.moveTo(left, Math.round(mid) + 0.5);
+    g.lineTo(left + this.plotWidth, Math.round(mid) + 0.5);
+    g.stroke();
+
+    g.strokeStyle = 'rgba(255, 255, 255, 0.07)';
+    g.beginPath();
+    g.moveTo(left, bottom + 0.5);
+    g.lineTo(left + this.plotWidth, bottom + 0.5);
+    g.stroke();
+
+    g.font = '9px ui-monospace, "SF Mono", Consolas, monospace';
+    g.fillStyle = '#6d7682';
+    g.textAlign = 'left';
+    g.textBaseline = 'top';
+    g.fillText(`ERROR ±${RESIDUAL_SCALE} dB`, left + 6, top + 4);
+    g.restore();
+  }
+
+  private drawOverlayCurves(g: CanvasRenderingContext2D): void {
+    if (this.overlay.target) {
+      this.strokeCurve(g, this.overlay.target, OVERLAY_TARGET, true, 0.8);
+    }
+    if (this.overlay.measured) {
+      this.strokeCurve(g, this.overlay.measured, OVERLAY_MEASURED, false, 0.95);
+    }
+  }
+
+  private strokeCurve(
+    g: CanvasRenderingContext2D,
+    curve: OverlayCurve,
+    color: string,
+    dashed: boolean,
+    alpha: number,
+  ): void {
+    if (curve.freqs.length < 2) return;
+    g.save();
+    g.beginPath();
+    for (let i = 0; i < curve.freqs.length; i++) {
+      const x = this.freqToX(curve.freqs[i]);
+      const y = this.dbToY(clamp(curve.db[i], DB_MIN, DB_MAX));
+      if (i === 0) g.moveTo(x, y);
+      else g.lineTo(x, y);
+    }
+    g.strokeStyle = color;
+    g.globalAlpha = alpha;
+    g.lineWidth = 1.4;
+    g.lineJoin = 'round';
+    if (dashed) g.setLineDash([5, 4]);
+    g.stroke();
+    g.restore();
+  }
+
+  private drawLegend(g: CanvasRenderingContext2D): void {
+    const items: Array<{ label: string; color: string; dashed?: boolean }> = [
+      { label: 'EQ', color: '#e8b44a' },
+    ];
+    if (this.overlay.target) items.push({ label: 'Target', color: OVERLAY_TARGET, dashed: true });
+    if (this.overlay.measured) items.push({ label: 'Measured', color: OVERLAY_MEASURED });
+    if (this.overlay.residual) items.push({ label: 'Error', color: '#c9d3de' });
+
+    const right = this.pad.left + this.plotWidth - 8;
+    let y = this.pad.top + (this.overlay.residual ? RESIDUAL_HEIGHT + 10 : 10);
+
+    g.save();
+    g.font = '10px ui-monospace, "SF Mono", Consolas, monospace';
+    g.textAlign = 'right';
+    g.textBaseline = 'middle';
+
+    for (const item of items) {
+      g.fillStyle = '#8a929e';
+      g.fillText(item.label, right, y);
+      const width = g.measureText(item.label).width;
+      const x1 = right - width - 8;
+      const x0 = x1 - 14;
+
+      g.beginPath();
+      g.moveTo(x0, y);
+      g.lineTo(x1, y);
+      g.strokeStyle = item.color;
+      g.lineWidth = item.dashed ? 1.3 : 1.7;
+      if (item.dashed) g.setLineDash([4, 3]);
+      g.stroke();
+      g.setLineDash([]);
+
+      y += 14;
+    }
+    g.restore();
   }
 
   private sampleFrequencies(): number[] {

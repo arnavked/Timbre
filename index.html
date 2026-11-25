@@ -72,6 +72,17 @@
                 Bands
               </button>
               <button
+                id="tab-measure"
+                class="tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="pane-measure"
+                tabindex="-1"
+              >
+                Measure
+              </button>
+              <button
                 id="tab-profile"
                 class="tab"
                 type="button"
@@ -95,6 +106,10 @@
               Preamp is automatic: it offsets your largest boost so the signal has headroom and
               nothing clips.
             </p>
+          </div>
+
+          <div id="pane-measure" class="pane" role="tabpanel" aria-labelledby="tab-measure" hidden>
+            <div id="measure-panel" class="measure-panel"></div>
           </div>
 
           <div id="pane-profile" class="pane" role="tabpanel" aria-labelledby="tab-profile" hidden>

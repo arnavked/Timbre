@@ -1,7 +1,7 @@
 {
   "name": "timbre",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "A browser-based workbench for designing headphone and earphone EQ curves.",
   "scripts": {
