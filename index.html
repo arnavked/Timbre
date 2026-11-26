@@ -13,8 +13,14 @@
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0b0d'/%3E%3Cg fill='%23e8b44a'%3E%3Crect x='7' y='12' width='3' height='8' rx='1.5'/%3E%3Crect x='14' y='7' width='3' height='18' rx='1.5'/%3E%3Crect x='21' y='10' width='3' height='12' rx='1.5'/%3E%3C/g%3E%3C/svg%3E"
     />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icon-180.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Timbre" />
   </head>
   <body>
+    <a class="skip-link" href="#main">Skip to the equalizer</a>
     <div class="app">
       <header class="topbar">
         <a class="brand" href="./">
@@ -31,12 +37,20 @@
           <div class="meter" title="Output peak" aria-hidden="true">
             <div class="meter-fill" id="meter-fill"></div>
           </div>
+          <span
+            class="limiter"
+            id="limiter-ind"
+            aria-hidden="true"
+            title="Limiter gain reduction"
+            >LIM</span
+          >
           <span class="rate" id="sample-rate">—</span>
         </div>
       </header>
 
-      <main class="layout">
-        <section class="stage">
+      <main class="layout" id="main">
+        <h1 class="sr-only">Timbre — headphone and earphone EQ workbench</h1>
+        <section class="stage" aria-label="Playback and response curve">
           <div class="transport">
             <button id="btn-play" class="btn primary" type="button">Play</button>
             <button id="btn-file" class="btn" type="button">Open file</button>
@@ -51,8 +65,23 @@
           </div>
 
           <div class="graph-wrap">
-            <canvas id="eq" aria-label="Equalizer response curve"></canvas>
-            <div class="graph-hint" id="graph-hint">Drag a dot to shape the curve</div>
+            <canvas
+              id="eq"
+              tabindex="0"
+              role="application"
+              aria-roledescription="equalizer curve editor"
+              aria-label="Equalizer response curve"
+              aria-describedby="graph-keys"
+            ></canvas>
+            <div class="graph-hint" id="graph-hint">
+              Drag a dot, or focus the graph and use the arrow keys
+            </div>
+            <p id="graph-keys" class="sr-only">
+              Use the arrow keys to move the selected band. Up and down change gain, left and
+              right change frequency; hold Shift for finer steps. Left and right bracket change
+              Q. Delete disables the selected band. Every control is also available as a number
+              field in the Bands tab.
+            </p>
           </div>
 
           <div class="status" id="status" role="status">Load a file or try pink noise.</div>

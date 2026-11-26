@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Timbre">
+  <rect width="512" height="512" rx="112" fill="#0a0b0d" />
+  <g fill="#e8b44a">
+    <rect x="120" y="196" width="48" height="120" rx="24" />
+    <rect x="232" y="112" width="48" height="288" rx="24" />
+    <rect x="344" y="160" width="48" height="192" rx="24" />
+  </g>
+</svg>

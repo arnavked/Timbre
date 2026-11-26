@@ -22,12 +22,19 @@ function rms(analyser: AnalyserNode, buffer: Float32Array<ArrayBuffer>): number 
  * Signal flow:
  *
  *   input ──► preamp ──► worklet cascade ──► wetAnalyser ──► eqGain ──┐
- *     └──► dryAnalyser ──► dryTrim ──► dryGain ───────────────────────┴──► out ──► master ──► destination
+ *     └──► dryAnalyser ──► dryTrim ──► dryGain ───────────────────────┴──► out
+ *                                                                          │
+ *                                     masterAnalyser ◄── limiter ◄────────┘
+ *                                              └──► destination
  *
  * Bypass crossfades eqGain against dryGain instead of tearing the chain down,
  * so A/B switching is click-free. dryTrim is driven by the ratio of the two
  * analyser RMS readings, which makes the comparison level-matched while audio
  * is playing rather than merely preamp-matched.
+ *
+ * The limiter sits after the mix, so it protects both the EQ and the bypass
+ * path, and its 5 ms lookahead delay applies equally to each. The peak meter
+ * reads the post-limiter signal, which is what actually reaches the device.
  */
 export class AudioEngine {
   readonly ctx: AudioContext;
@@ -53,6 +60,8 @@ export class AudioEngine {
   private objectUrl: string | null = null;
 
   private worklet: AudioWorkletNode | null = null;
+  private limiter: AudioWorkletNode | null = null;
+  private limiterReduction = 0;
   private workletState = 'none';
   private bands: Band[] = [];
   private bandsSent = 0;
@@ -92,9 +101,7 @@ export class AudioEngine {
     this.dryGain.connect(this.outGain);
 
     this.eqGain.connect(this.outGain);
-    this.outGain.connect(this.masterAnalyser);
     this.masterAnalyser.connect(this.ctx.destination);
-
     this.eqGain.gain.value = 1;
     this.dryGain.gain.value = 0;
     this.dryTrim.gain.value = 1;
@@ -127,7 +134,32 @@ export class AudioEngine {
       else if (data?.type === 'ack') this.workletState = `ack:${data.bands}`;
     };
 
+    // Master limiter: a safety net after the wet/dry mix, so bypass and EQ are
+    // both protected and the lookahead delay is common to both paths.
+    const limiter = new AudioWorkletNode(this.ctx, 'timbre-limiter', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [2],
+      channelCount: 2,
+      channelCountMode: 'explicit',
+    });
+    limiter.port.onmessage = (event: MessageEvent) => {
+      const data = event.data as { type?: string; gain?: number };
+      if (data?.type === 'gr' && typeof data.gain === 'number') {
+        this.limiterReduction = 20 * Math.log10(Math.max(1e-4, data.gain));
+      }
+    };
+    limiter.port.postMessage({
+      type: 'limiter-config',
+      ceilingDb: -0.3,
+      lookaheadMs: 5,
+      releaseMs: 80,
+    });
+    this.outGain.connect(limiter);
+    limiter.connect(this.masterAnalyser);
+
     this.worklet = node;
+    this.limiter = limiter;
     this.initialized = true;
     this.sendConfig();
 
@@ -142,8 +174,12 @@ export class AudioEngine {
   }
 
   /** Handshake state of the worklet, for diagnostics. */
-  get diagnostics(): { worklet: string; bandsSent: number } {
-    return { worklet: this.workletState, bandsSent: this.bandsSent };
+  get diagnostics(): { worklet: string; bandsSent: number; limiter: boolean } {
+    return {
+      worklet: this.workletState,
+      bandsSent: this.bandsSent,
+      limiter: this.limiter !== null,
+    };
   }
 
   get sampleRate(): number {
@@ -268,6 +304,14 @@ export class AudioEngine {
       if (value > peak) peak = value;
     }
     return peak;
+  }
+
+  /**
+   * Current limiter gain reduction in dB (0 when the limiter is not working).
+   * Updated a few times per second from the audio thread.
+   */
+  get gainReduction(): number {
+    return this.limiterReduction;
   }
 
   private sendConfig(): void {

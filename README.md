@@ -10,6 +10,11 @@ your machine.
 
 ## Status
 
+**M4 — Limiter, offline, and accessibility.** A lookahead true-peak limiter guards the
+master output at −0.3 dBTP, the app installs as a PWA and reloads with no network, and the
+whole workbench is operable from the keyboard. Lighthouse accessibility is 100 on the
+production build.
+
 **M3 — Measurement-driven design.** Load a headphone measurement, overlay a built-in or
 custom target, and auto-fit a correction curve in one click. Ten bands in an `AudioWorklet`,
 per-channel routing, undo, level-matched A/B, and a profile library with `ParametricEQ.txt`
@@ -28,8 +33,13 @@ Then open http://localhost:5173.
 
 ```bash
 npm run build      # typecheck + production build
+npm run preview    # serve dist/ and exercise the service worker
 npm run typecheck  # types only
 ```
+
+The production build registers a service worker on first load, so it keeps working after a
+reload with the network off. Serve it from a real origin (not `file://`) for the service
+worker and install prompt to be available.
 
 ## What works today
 
@@ -44,7 +54,18 @@ npm run typecheck  # types only
 - Undo/redo with `Ctrl/Cmd+Z`, `Ctrl/Cmd+Shift+Z`, or `Ctrl/Cmd+Y` (50 steps)
 - The audio device is released whenever nothing is playing, so USB and Bluetooth
   headsets don't idle-hiss
-- Live output peak meter
+- Live output peak meter, measured after the limiter
+- A 5 ms lookahead limiter holds the master at −0.3 dBTP using a 4× windowed-sinc true-peak
+  detector, so inter-sample peaks from EQ boosts cannot clip the output. A `LIM` indicator
+  shows current gain reduction
+- Installs as a PWA and works offline after the first visit; the service worker precaches the
+  shell, icons, and hashed assets, and a new deploy replaces the old cache automatically
+- Full keyboard operation: focus the graph and use the arrow keys to nudge frequency and
+  gain (`Shift` for fine steps), `[`/`]` for Q, `Delete` to disable; globally, `Space`
+  plays/pauses, `B` bypasses, `A` adds a band, `E` exports, `1`–`9` select a band, and
+  `Esc` clears the selection
+- WCAG 2.2 AA groundwork: skip link, labelled landmarks, visible focus, screen-reader
+  descriptions for the canvas and meter, and `prefers-reduced-motion` support
 - Save, load, duplicate, and delete profiles with a device key
   (model + connection + codec + ANC)
 - Profiles live in IndexedDB and never leave the browser
@@ -71,15 +92,19 @@ npm run typecheck  # types only
 
 ```
 index.html
+public/
+  manifest.webmanifest   PWA metadata
+  icon-*.png, icon.svg   install icons
 src/
-  main.ts              wiring, transport, state
+  main.ts              wiring, transport, state, keyboard shortcuts
+  pwa.ts               production-only service-worker registration
   style.css
   audio/
     dsp.ts             RBJ biquads, magnitude response, auto-preamp
-    engine.ts          Web Audio graph, sources, gain matching
+    engine.ts          Web Audio graph, sources, limiter, gain matching
     fit.ts             deterministic multi-band auto-fit solver
     worklet/
-      biquad-processor.ts   AudioWorklet cascade (transposed DF-II)
+      biquad-processor.ts   AudioWorklet cascade + true-peak limiter
   formats/
     parametric.ts      ParametricEQ.txt parse + export
     profileJson.ts     lossless profile JSON
@@ -102,12 +127,21 @@ Signal flow:
 
 ```
 input ──► preamp ──► worklet cascade (10 biquads, L/R) ──► eqGain ──┐
-  └──────────────────────────────────────────► dryTrim ──► dryGain ──┴──► out ──► analyser ──► destination
+  └──────────────────────────────────────────► dryTrim ──► dryGain ──┴──► outGain
+                                                                           │
+                    destination ◄── masterAnalyser ◄── lookahead limiter ◄─┘
 ```
 
 Bypass crossfades `eqGain` against `dryGain` rather than tearing the chain down, so A/B
 switching is click-free. `dryTrim` follows the RMS ratio of the two paths, which keeps the
-comparison honest while audio plays.
+comparison honest while audio plays. The limiter sits after the mix, so it protects both the
+EQ and bypass paths, and the peak meter reads what actually reaches the device.
+
+The service worker is generated at build time by a small Vite plugin (`offlineShell` in
+`vite.config.ts`). It precaches `index.html`, the manifest and icons, and every hashed asset;
+the cache name is derived from that file list, so a deploy installs a fresh cache and deletes
+the old one. Navigations are network-first with a cached-shell fallback; assets are
+cache-first. It is registered only in production, and never blocks startup if it fails.
 
 Coefficients are computed once on the main thread and posted to the worklet, so the graph,
 the preview, and the future export all share one implementation. Each config change
@@ -119,7 +153,10 @@ interpolating coefficients directly.
 - The auto-fit solver places peaking bands only; shelves are still a manual choice.
 - Targets are sampled on a 12-points-per-octave grid, so extreme narrow features are
   smoothed to that resolution (measured error stays under 0.1 dB).
-- No lookahead limiter, service worker, or full accessibility pass yet — M4.
+- The limiter adds 5 ms of latency to every path. That is inaudible for EQ preview but is
+  worth knowing if you route the output into a recording.
+- Cross-browser verification so far is Chromium-only (Chrome and Edge). Firefox and Safari
+  have not been through the manual pass yet.
 - `ParametricEQ.txt` carries the enabled bands only. JSON is the lossless format for
   disabled bands, per-channel routing, shelf slopes, and the measurement/target context.
 - Desktop-first. Mobile works but the layout is tighter.
@@ -132,6 +169,6 @@ interpolating coefficients directly.
 | M1 | AudioWorklet cascade, 10 bands, all filter types, per-channel, undo, gain-matched A/B ✅ |
 | M2 | Profiles, `ParametricEQ.txt` import/export, JSON, device keys ✅ |
 | M3 | Measurement CSV overlay, target curves, auto-fit solver ✅ |
-| M4 | Limiter, PWA, accessibility pass |
+| M4 | Lookahead limiter, PWA/offline, accessibility pass ✅ |
 
 See [`PRD.md`](./PRD.md) for the full requirements.

@@ -9,11 +9,16 @@ import {
   BAND_COUNT,
   FREQ_MAX,
   FREQ_MIN,
+  GAIN_MAX,
+  GAIN_MIN,
+  Q_MAX,
+  Q_MIN,
   blankBand,
   clamp,
   cloneBands,
   createDefaultBands,
   flattenBands,
+  formatHz,
   type Band,
 } from './model/band';
 import {
@@ -49,6 +54,7 @@ import {
   type MeasureView,
 } from './ui/measurePanel';
 import { ProfilePanel } from './ui/profilePanel';
+import { registerServiceWorker } from './pwa';
 
 function must<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -62,6 +68,7 @@ const preampEl = must<HTMLElement>('#preamp');
 const statusEl = must<HTMLElement>('#status');
 const rateEl = must<HTMLElement>('#sample-rate');
 const meterEl = must<HTMLElement>('#meter-fill');
+const limiterInd = must<HTMLElement>('#limiter-ind');
 const hintEl = must<HTMLElement>('#graph-hint');
 const graphWrap = must<HTMLElement>('.graph-wrap');
 
@@ -451,6 +458,36 @@ function applyPatch(id: number, patch: Partial<Omit<Band, 'id'>>): boolean {
   applyBands();
   markDirty();
   return true;
+}
+
+function describeBand(band: Band): string {
+  const suffix = band.enabled ? '' : ', off';
+  return `Band ${band.id + 1}: ${formatHz(band.freq)}, ${band.gain.toFixed(1)} dB, Q ${band.q.toFixed(2)}${suffix}.`;
+}
+
+/** Enable the lowest-numbered idle band and select it. */
+function addBand(): void {
+  const target = state.bands.find((band) => !band.enabled);
+  if (!target) {
+    setStatus('All 10 bands are already in use.');
+    return;
+  }
+
+  const before = cloneBands(state.bands);
+  applyPatch(target.id, { enabled: true });
+  recordHistory(before);
+  selectBand(target.id);
+  setStatus(`Added band ${target.id + 1}.`);
+}
+
+function disableBand(id: number): void {
+  const band = state.bands.find((candidate) => candidate.id === id);
+  if (!band || !band.enabled) return;
+
+  const before = cloneBands(state.bands);
+  applyPatch(id, { enabled: false });
+  recordHistory(before);
+  setStatus(`Band ${id + 1} disabled.`);
 }
 
 function setStatus(text: string): void {
@@ -1024,6 +1061,52 @@ for (const name of TAB_ORDER) {
   });
 }
 
+// Keyboard editing on the graph itself, so the canvas is not mouse-only.
+canvas.addEventListener('keydown', (event) => {
+  if (event.altKey || event.ctrlKey || event.metaKey) return;
+
+  const key = event.key;
+  const gainDir = key === 'ArrowUp' ? 1 : key === 'ArrowDown' ? -1 : 0;
+  const freqDir = key === 'ArrowRight' ? 1 : key === 'ArrowLeft' ? -1 : 0;
+  const qDir = key === ']' ? 1 : key === '[' ? -1 : 0;
+  const remove = key === 'Delete' || key === 'Backspace';
+  if (gainDir === 0 && freqDir === 0 && qDir === 0 && !remove) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  hintEl.classList.add('hidden');
+
+  const selected = state.bands.find((band) => band.id === state.selectedId);
+  const band = selected ?? state.bands.find((candidate) => candidate.enabled);
+  if (!band) return;
+  if (band.id !== state.selectedId) selectBand(band.id);
+
+  if (remove) {
+    disableBand(band.id);
+    return;
+  }
+
+  const before = cloneBands(state.bands);
+  const fine = event.shiftKey;
+
+  if (gainDir !== 0) {
+    const step = fine ? 0.1 : 0.5;
+    const gain = clamp(Number((band.gain + gainDir * step).toFixed(2)), GAIN_MIN, GAIN_MAX);
+    applyPatch(band.id, { gain });
+  } else if (freqDir !== 0) {
+    const octaves = (freqDir * (fine ? 1 : 4)) / 48;
+    const freq = clamp(Math.round(band.freq * Math.pow(2, octaves)), FREQ_MIN, FREQ_MAX);
+    applyPatch(band.id, { freq });
+  } else {
+    const q = clamp(Number((band.q * Math.pow(1.12, qDir)).toFixed(3)), Q_MIN, Q_MAX);
+    applyPatch(band.id, { q });
+  }
+
+  recordHistory(before);
+  const updated = state.bands.find((candidate) => candidate.id === band.id);
+  if (updated) setStatus(describeBand(updated));
+});
+
 resetBtn.addEventListener('click', () => {
   const before = cloneBands(state.bands);
   state.bands = flattenBands(state.bands);
@@ -1059,10 +1142,18 @@ window.addEventListener('drop', (event) => {
 });
 
 window.addEventListener('keydown', (event) => {
-  const target = event.target as HTMLElement | null;
+  if (event.defaultPrevented) return;
+
+  // `event.target` is the focused element in normal use, but can be the
+  // document itself when nothing is focused. Guard before calling Element
+  // methods such as `closest`.
+  const target = event.target instanceof HTMLElement ? event.target : null;
   const typing =
     target !== null &&
-    (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA');
+    (target.tagName === 'INPUT' ||
+      target.tagName === 'SELECT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.isContentEditable);
 
   const mod = event.ctrlKey || event.metaKey;
 
@@ -1079,13 +1170,41 @@ window.addEventListener('keydown', (event) => {
     return;
   }
 
-  if (typing) return;
+  if (typing || mod || event.altKey) return;
 
   if (event.code === 'Space') {
+    // Let a focused button or link handle its own activation.
+    if (target?.closest('button, a[href], summary, [role="tab"]')) return;
     event.preventDefault();
     void togglePlay();
-  } else if (!mod && event.key.toLowerCase() === 'b') {
+    return;
+  }
+
+  const key = event.key.toLowerCase();
+
+  if (key === 'b') {
+    event.preventDefault();
     toggleBypass();
+  } else if (key === 'a') {
+    event.preventDefault();
+    addBand();
+  } else if (key === 'e') {
+    event.preventDefault();
+    exportText();
+  } else if (key === 'delete' || key === 'backspace') {
+    if (state.selectedId === null) return;
+    event.preventDefault();
+    disableBand(state.selectedId);
+  } else if (key === 'escape') {
+    selectBand(null);
+    setStatus('Selection cleared.');
+  } else if (/^[0-9]$/.test(key)) {
+    const index = key === '0' ? 9 : Number(key) - 1;
+    const band = state.bands[index];
+    if (!band) return;
+    event.preventDefault();
+    selectBand(band.id);
+    setStatus(describeBand(band));
   }
 });
 
@@ -1111,6 +1230,20 @@ engine
   });
 
 let lastMatch = 0;
+let lastLimiter = '';
+
+function updateLimiterIndicator(): void {
+  const reduction = engine.playing ? engine.gainReduction : 0;
+  const active = reduction <= -0.1;
+  const text = active ? `LIM ${reduction.toFixed(1)}` : 'LIM';
+  if (text === lastLimiter) return;
+  lastLimiter = text;
+  limiterInd.textContent = text;
+  limiterInd.classList.toggle('active', active);
+  limiterInd.title = active
+    ? `Limiter reducing ${Math.abs(reduction).toFixed(1)} dB`
+    : 'Limiter idle — ceiling −0.3 dBTP';
+}
 
 function tick(now: number): void {
   if (engine.playing) {
@@ -1122,6 +1255,8 @@ function tick(now: number): void {
     meterEl.style.width = '0%';
   }
 
+  updateLimiterIndicator();
+
   if (now - lastMatch > 120) {
     engine.updateGainMatch();
     lastMatch = now;
@@ -1132,6 +1267,8 @@ function tick(now: number): void {
 }
 
 requestAnimationFrame(tick);
+
+registerServiceWorker();
 
 if (import.meta.env.DEV) {
   (window as unknown as { __timbre: unknown }).__timbre = {
@@ -1157,5 +1294,7 @@ if (import.meta.env.DEV) {
     loadMeasurementFile,
     loadCustomTarget,
     selectTab,
+    addBand,
+    disableBand,
   };
 }
